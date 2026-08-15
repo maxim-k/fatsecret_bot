@@ -23,12 +23,15 @@ Physical Life has no public API, so the bot never talks to it. It writes to FatS
 ### 1. FatSecret
 
 1. Register at [platform.fatsecret.com/register](https://platform.fatsecret.com/register) — free **Basic** edition, self sign-up, no approval.
-2. Under **Manage API Keys**, copy your consumer key and secret.
+2. Under **Manage API Keys**, copy the **OAuth 1.0 Consumer Key and Shared Secret**.
+
+   > Not the OAuth 2.0 **Client ID / Client Secret**. FatSecret issues both, and only OAuth 1.0 can reach a user's diary — OAuth 2.0 supports just the `client_credentials` grant, which is app-level food lookups only. Using the wrong pair fails with a bare `400 Invalid signature`.
+
 3. Under **IP Restrictions**, whitelist the machine that will run the bot. Basic allows 15 individual addresses and no CIDR ranges, so add your home IP for development and the VPS IP when you deploy. Auth fails confusingly if you skip this.
 4. Get an access token for your own account:
 
    ```bash
-   uv run python fatsecret.py authorize
+   uv run --env-file .env python fatsecret.py authorize
    ```
 
    It prints a URL, you approve in a browser, FatSecret shows a PIN, you paste it back, and it prints the token and secret to put in `.env`. No callback server needed.
@@ -55,8 +58,10 @@ Fill it in. `.env` is gitignored — keep it that way.
 
 ```bash
 uv sync
-uv run python main.py
+uv run --env-file .env python main.py
 ```
+
+`--env-file` is what loads `.env`; nothing reads it implicitly, so plain `uv run python main.py` starts with no configuration and exits.
 
 Requires Python 3.14; `uv python install 3.14` if you don't have it.
 

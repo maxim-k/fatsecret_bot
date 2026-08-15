@@ -386,7 +386,11 @@ async def _fetch_request_token(
     params["oauth_callback"] = "oob"
     params["oauth_signature"] = _sign("POST", _REQUEST_TOKEN_URL, params, consumer_secret)
     response = await client.post(_REQUEST_TOKEN_URL, data=params)
-    response.raise_for_status()
+    # raise_for_status() discards the response body, but FatSecret puts the
+    # actual reason there ("Invalid signature", "Invalid consumer key") while
+    # returning a bare 400 — so surface it or every failure looks identical.
+    if response.is_error:
+        raise FatSecretError(str(response.status_code), response.text.strip())
     body = dict(parse_qsl(response.text))
     if "oauth_problem" in body:
         raise FatSecretError("oauth_problem", body["oauth_problem"])
@@ -418,7 +422,11 @@ async def _fetch_access_token(
         "POST", _ACCESS_TOKEN_URL, params, consumer_secret, request_secret
     )
     response = await client.post(_ACCESS_TOKEN_URL, data=params)
-    response.raise_for_status()
+    # raise_for_status() discards the response body, but FatSecret puts the
+    # actual reason there ("Invalid signature", "Invalid consumer key") while
+    # returning a bare 400 — so surface it or every failure looks identical.
+    if response.is_error:
+        raise FatSecretError(str(response.status_code), response.text.strip())
     body = dict(parse_qsl(response.text))
     if "oauth_problem" in body:
         raise FatSecretError("oauth_problem", body["oauth_problem"])

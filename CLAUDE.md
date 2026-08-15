@@ -81,6 +81,7 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 ## Gotchas that have already caused bugs
 
 **FatSecret**
+- **OAuth 1.0 only.** Diary access requires the *Consumer Key + Shared Secret* and three-legged delegation. The OAuth 2.0 *Client ID + Client Secret* pair supports only the `client_credentials` grant, which is app-level food lookup and **cannot touch a user's diary**. Confusing the two produces a bare `400 Invalid signature`, not a helpful message — verified against the live API, and our signing was confirmed byte-identical to `oauthlib`'s reference implementation, so suspect the credentials before the code.
 - `date` is **days since 1970-01-01**, not a timestamp. Use `models.to_epoch_days`.
 - **Errors arrive as HTTP 200** with an `error` object in the body. Status codes alone are not enough.
 - A single result comes back as an **object**; multiple come back as a **list**. Numbers arrive as **strings**. `fatsecret._as_list` and `_num` normalise both — use them.
