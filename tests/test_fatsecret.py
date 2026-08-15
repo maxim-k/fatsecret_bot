@@ -327,3 +327,21 @@ async def test_missing_credentials_raise_clear_error(monkeypatch: pytest.MonkeyP
 def test_epoch_day_round_trip() -> None:
     day = date(2026, 8, 13)
     assert from_epoch_days(to_epoch_days(day)) == day
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_list_diary_handles_null_collection_on_an_empty_day() -> None:
+    # An empty day comes back with the key PRESENT and null, so `.get(k, {})`
+    # returns None and blows up. Every day with no food logged hit this.
+    respx.get(url__startswith=fatsecret._DIARY_URL).mock(
+        return_value=httpx.Response(200, json={"food_entries": None})
+    )
+    assert await fatsecret.list_diary(date(2026, 8, 15)) == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_foods_handles_null_collection() -> None:
+    respx.post(fatsecret._API_URL).mock(return_value=httpx.Response(200, json={"foods": None}))
+    assert await fatsecret.search_foods("nothing matches this") == []

@@ -260,7 +260,7 @@ async def search_foods(query: str) -> list[Food]:
         _API_URL,
         {"method": "foods.search", "search_expression": query, "format": "json"},
     )
-    raw_foods = _as_list(body.get("foods", {}).get("food"))
+    raw_foods = _as_list((body.get("foods") or {}).get("food"))
     return [
         Food(food_id=int(food["food_id"]), name=food["food_name"], servings=[])
         for food in raw_foods
@@ -278,7 +278,7 @@ async def get_food(food_id: int) -> Food:
         "POST", _API_URL, {"method": "food.get.v2", "food_id": str(food_id), "format": "json"}
     )
     raw_food = body["food"]
-    raw_servings = _as_list(raw_food.get("servings", {}).get("serving"))
+    raw_servings = _as_list((raw_food.get("servings") or {}).get("serving"))
     servings = [_parse_serving(raw_serving) for raw_serving in raw_servings]
     return Food(food_id=int(raw_food["food_id"]), name=raw_food["food_name"], servings=servings)
 
@@ -310,7 +310,7 @@ async def list_diary(day: date) -> list[DiaryEntry]:
     # this boundary and nowhere else in the codebase needs to know about it.
     epoch_day = to_epoch_days(day)
     body = await _request("GET", _DIARY_URL, {"date": str(epoch_day), "format": "json"})
-    raw_entries = _as_list(body.get("food_entries", {}).get("food_entry"))
+    raw_entries = _as_list((body.get("food_entries") or {}).get("food_entry"))
     return [_parse_diary_entry(raw_entry) for raw_entry in raw_entries]
 
 
