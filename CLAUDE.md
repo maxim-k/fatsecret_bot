@@ -86,11 +86,11 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 - **Errors arrive as HTTP 200** with an `error` object in the body. Status codes alone are not enough.
 - A single result comes back as an **object**; multiple come back as a **list**. Numbers arrive as **strings**. `fatsecret._as_list` and `_num` normalise both — use them.
 - **IP whitelisting is mandatory.** Basic tier allows 15 individual addresses, no CIDR. A changing home IP or a new VPS will break auth with a confusing error.
-- **Three of five endpoints are inferred, not verified.** Only `POST /rest/food-entries/v1` is confirmed. `search_foods`, `get_food`, `list_diary` and `delete_entry` were written by analogy and need checking against the live API.
+- **Verified against the live API (2026-08-15):** `search_foods`, `get_food` and `list_diary` all work as implemented. `create_entry` and `delete_entry` are still unexercised — they write, so test them deliberately.
 - **Short-term throttling is real and undocumented**: bursts return HTTP 200 with `error 12`, "User is performing too many actions". This is separate from the 5,000/day cap and clears on its own. Keep bulk reads sequential with a ~1.5 s delay; do not fan out with `asyncio.gather`.
 - A food logged from a non-US regional dataset can return `error 106 Invalid ID` when looked up on the Basic tier. Skip and continue rather than aborting a bulk operation.
 - Liquids (milk, protein shakes, beer) usually expose only **ml** servings, so `pick_serving` rejects them by design and they land in the review queue. That is correct, not a bug — grams and millilitres are not interchangeable.
-- Basic tier is **US-only dataset**. The user is in a Russian-language program, so `foods.search` may not find their foods. The intended mitigation is building aliases from their own diary history rather than search. **Unverified.**
+- Basic tier is **US-only dataset**. This is a non-issue: the user lives in the US and logs US-catalogue foods exclusively. Physical Life treats the diary as a plain nutrient tracker and does not care about the food's source. Aliases are seeded from the user's own diary history rather than search (37 seeded from August 2025).
 
 **Vision**
 - `weight_g` is required and `> 0`, so the model cannot express "unreadable". **`confidence: 0.0` is the agreed signal** that the weight was not actually read. The auto-submit gate blocks it. Do not remove this convention without replacing it.
