@@ -25,7 +25,7 @@ When picking a scope, ask *"what would make me touch this again?"* rather than *
 | `match` | Product text → FatSecret food, serving, and unit count; alias learning |
 | `diary` | FatSecret writes and the OAuth token lifecycle |
 | `review` | Pending queue and the approve / edit / undo interaction |
-| `store` | Persistence of aliases, queue, and the audit log |
+| `store` | Shared data models, and persistence of aliases, queue, and the audit log |
 | `build` | uv, ruff, mypy, pytest, Docker, CI |
 
 Seven scopes is generous for a project this size. If one never gets used, delete the row rather than keeping it for symmetry.
