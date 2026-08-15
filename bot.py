@@ -192,7 +192,12 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Reading…")
 
     aliases = store.load_aliases()
-    recent = [alias.food_name for alias in aliases.values()][:RECENT_FOOD_CANDIDATES]
+    # Most-eaten first: the candidate list is capped, and the model can only
+    # reuse a name it was shown. Alias keys come from FatSecret's naming
+    # ("Egg"), while the model would otherwise say "eggs" and miss the lookup.
+    recent = [
+        alias.food_name for alias in sorted(aliases.values(), key=lambda a: a.hits, reverse=True)
+    ][:RECENT_FOOD_CANDIDATES]
     try:
         recognition = await vision.recognize(image_bytes, media_type, recent)
     except vision.RecognitionError as exc:
