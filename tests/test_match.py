@@ -1,0 +1,202 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import pytest
+
+from match import NoGramServingError, lookup, normalize, pick_serving, units_for
+from models import Alias, Food, Serving
+
+# --- normalize -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["Eggs", "Eggs ", "  eggs", "EGGS", " EggS ", "eggs\n"],
+)
+def test_normalize_equivalences(raw: str) -> None:
+    assert normalize(raw) == "eggs"
+
+
+def test_normalize_collapses_internal_whitespace() -> None:
+    assert normalize("egg   whites\tboiled") == "egg whites boiled"
+
+
+def test_normalize_is_idempotent() -> None:
+    once = normalize("  Chicken Breast  ")
+    assert normalize(once) == once
+
+
+# --- lookup ----------------------------------------------------------------
+
+
+def _alias(food_id: int = 1) -> Alias:
+    return Alias(
+        food_id=food_id,
+        food_name="Eggs, whole",
+        serving_id=100,
+        serving_grams=50.0,
+    )
+
+
+def test_lookup_hit_exact() -> None:
+    aliases = {"eggs": _alias()}
+    assert lookup("eggs", aliases) is aliases["eggs"]
+
+
+def test_lookup_hit_after_normalization() -> None:
+    aliases = {"eggs": _alias()}
+    assert lookup("  Eggs ", aliases) is aliases["eggs"]
+
+
+def test_lookup_miss() -> None:
+    aliases = {"eggs": _alias()}
+    assert lookup("bacon", aliases) is None
+
+
+def test_lookup_empty_aliases() -> None:
+    assert lookup("anything", {}) is None
+
+
+# --- units_for ---------------------------------------------------------
+
+
+def test_units_for_100g_serving() -> None:
+    assert units_for(100.0, 123.0) == 1.23
+
+
+def test_units_for_non_100g_serving() -> None:
+    assert units_for(50.0, 125.0) == 2.5
+
+
+def test_units_for_rounds_to_three_decimals() -> None:
+    # 1 / 3 g servings -> repeating decimal, must round rather than explode.
+    assert units_for(3.0, 1.0) == 0.333
+
+
+def test_units_for_zero_serving_grams_raises() -> None:
+    with pytest.raises(ValueError, match="serving_grams"):
+        units_for(0.0, 100.0)
+
+
+def test_units_for_negative_serving_grams_raises() -> None:
+    with pytest.raises(ValueError, match="serving_grams"):
+        units_for(-10.0, 100.0)
+
+
+def test_units_for_zero_grams_raises() -> None:
+    with pytest.raises(ValueError, match="grams"):
+        units_for(100.0, 0.0)
+
+
+def test_units_for_negative_grams_raises() -> None:
+    with pytest.raises(ValueError, match="grams"):
+        units_for(100.0, -5.0)
+
+
+# --- pick_serving --------------------------------------------------------
+
+
+def test_pick_serving_prefers_gram_serving() -> None:
+    food = Food(
+        food_id=1,
+        name="Milk",
+        servings=[
+            Serving(serving_id=1, description="1 cup", metric_amount=240.0, metric_unit="ml"),
+            Serving(serving_id=2, description="100 g", metric_amount=100.0, metric_unit="g"),
+        ],
+    )
+    serving, units = pick_serving(food, 250.0)
+    assert serving.serving_id == 2
+    assert units == 2.5
+
+
+def test_pick_serving_scales_non_100g_serving() -> None:
+    food = Food(
+        food_id=1,
+        name="Cheese",
+        servings=[
+            Serving(serving_id=1, description="1 slice", metric_amount=20.0, metric_unit="g"),
+        ],
+    )
+    serving, units = pick_serving(food, 90.0)
+    assert serving.serving_id == 1
+    assert units == 4.5
+
+
+def test_pick_serving_rejects_ml_only() -> None:
+    food = Food(
+        food_id=1,
+        name="Milk",
+        servings=[
+            Serving(serving_id=1, description="1 cup", metric_amount=240.0, metric_unit="ml"),
+        ],
+    )
+    with pytest.raises(NoGramServingError):
+        pick_serving(food, 250.0)
+
+
+def test_pick_serving_no_metric_servings_raises() -> None:
+    food = Food(
+        food_id=1,
+        name="Protein Bar",
+        servings=[
+            Serving(serving_id=1, description="1 bar", metric_amount=None, metric_unit=None),
+        ],
+    )
+    with pytest.raises(NoGramServingError):
+        pick_serving(food, 60.0)
+
+
+def test_pick_serving_no_servings_at_all_raises() -> None:
+    food = Food(food_id=1, name="Mystery Food", servings=[])
+    with pytest.raises(NoGramServingError):
+        pick_serving(food, 60.0)
+
+
+def test_pick_serving_skips_non_positive_metric_amount() -> None:
+    food = Food(
+        food_id=1,
+        name="Weird Food",
+        servings=[
+            Serving(serving_id=1, description="broken", metric_amount=0.0, metric_unit="g"),
+            Serving(serving_id=2, description="100 g", metric_amount=100.0, metric_unit="g"),
+        ],
+    )
+    serving, units = pick_serving(food, 100.0)
+    assert serving.serving_id == 2
+    assert units == 1.0
+
+
+def test_pick_serving_error_message_names_food() -> None:
+    food = Food(food_id=42, name="Protein Bar", servings=[])
+    with pytest.raises(NoGramServingError, match="42"):
+        pick_serving(food, 60.0)
+
+
+def test_pick_serving_grams_unit_case_insensitive() -> None:
+    food = Food(
+        food_id=1,
+        name="Rice",
+        servings=[
+            Serving(serving_id=1, description="100 g", metric_amount=100.0, metric_unit="G"),
+        ],
+    )
+    serving, units = pick_serving(food, 200.0)
+    assert serving.serving_id == 1
+    assert units == 2.0
+
+
+# --- alias round trip, as end-to-end sanity ------------------------------
+
+
+def test_alias_serving_grams_feeds_units_for() -> None:
+    alias = Alias(
+        food_id=7,
+        food_name="Oats",
+        serving_id=200,
+        serving_grams=40.0,
+        hits=3,
+        last_used=datetime(2026, 1, 1),
+    )
+    assert units_for(alias.serving_grams, 100.0) == 2.5
