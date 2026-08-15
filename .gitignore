@@ -1,0 +1,29 @@
+# Secrets and runtime config
+.env
+.env.*
+!.env.example
+
+# Runtime state — personal diary data, must never be committed
+data/
+*.jsonl
+aliases.json
+queue.json
+photos/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
