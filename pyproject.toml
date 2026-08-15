@@ -19,14 +19,11 @@ dev = [
     "respx>=0.21",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-# Flat layout: modules live at the repo root rather than in a package directory.
-only-include = ["main.py", "bot.py", "vision.py", "fatsecret.py", "store.py"]
-sources = ["."]
+[tool.uv]
+# This is an application, not a distributable library: it is run from a checkout
+# and copied wholesale into the image. Building a wheel would mean maintaining a
+# module allowlist that silently drops files when a new one is added.
+package = false
 
 [tool.ruff]
 line-length = 100
@@ -71,3 +68,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Flat layout with no installed package, so the repo root must be on sys.path
+# for tests to import the modules under test.
+pythonpath = ["."]
