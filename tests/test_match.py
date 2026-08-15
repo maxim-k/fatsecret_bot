@@ -200,3 +200,29 @@ def test_alias_serving_grams_feeds_units_for() -> None:
         last_used=datetime(2026, 1, 1),
     )
     assert units_for(alias.serving_grams, 100.0) == 2.5
+
+
+def test_pick_serving_prefers_plain_100g_over_natural_units() -> None:
+    # A weighed portion reads better as "1.23 x 100 g" than "2.46 x 1 large".
+    food = Food(
+        food_id=3092,
+        name="Egg",
+        servings=[
+            Serving(serving_id=11206, description="1 large", metric_amount=50.0, metric_unit="g"),
+            Serving(serving_id=51772, description="100 g", metric_amount=100.0, metric_unit="g"),
+        ],
+    )
+    serving, units = pick_serving(food, 123.0)
+    assert serving.serving_id == 51772
+    assert units == 1.23
+
+
+def test_pick_serving_falls_back_to_any_gram_serving() -> None:
+    food = Food(
+        food_id=1,
+        name="Bar",
+        servings=[Serving(serving_id=9, description="1 bar", metric_amount=40.0, metric_unit="g")],
+    )
+    serving, units = pick_serving(food, 80.0)
+    assert serving.serving_id == 9
+    assert units == 2.0

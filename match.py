@@ -20,6 +20,10 @@ _WHITESPACE_RE = re.compile(r"\s+")
 # third-party API response we don't control.
 _GRAMS_UNIT = "g"
 
+# FatSecret exposes a plain "100 g" serving for most generic foods alongside
+# natural-unit ones ("1 large"). Preferring it keeps diary entries readable.
+_METRIC_SERVING_GRAMS = 100.0
+
 
 class NoGramServingError(Exception):
     """Raised when a food has no serving that can be scaled by weight.
@@ -89,13 +93,22 @@ def pick_serving(food: Food, grams: float) -> tuple[Serving, float]:
     :raises NoGramServingError: If ``food`` exposes no serving whose
         ``metric_unit`` is grams with a positive ``metric_amount``.
     """
-    for serving in food.servings:
-        if serving.metric_unit is None or serving.metric_amount is None:
-            continue
-        if serving.metric_unit.strip().lower() != _GRAMS_UNIT:
-            continue
-        if serving.metric_amount <= 0:
-            continue
-        return serving, units_for(serving.metric_amount, grams)
+    usable = [
+        serving
+        for serving in food.servings
+        if serving.metric_unit is not None
+        and serving.metric_amount is not None
+        and serving.metric_amount > 0
+        and serving.metric_unit.strip().lower() == _GRAMS_UNIT
+    ]
+    if not usable:
+        raise NoGramServingError(f"food {food.food_id!r} ({food.name!r}) has no gram-based serving")
 
-    raise NoGramServingError(f"food {food.food_id!r} ({food.name!r}) has no gram-based serving")
+    # Any gram serving scales correctly, but the choice shows up in the diary the
+    # user reads back: a weighed 123 g of egg reads far better as "1.23 x 100 g"
+    # than as "2.46 x 1 large". Prefer a plain metric serving when one exists.
+    chosen = next(
+        (serving for serving in usable if serving.metric_amount == _METRIC_SERVING_GRAMS),
+        usable[0],
+    )
+    return chosen, units_for(chosen.metric_amount or 0, grams)
