@@ -74,6 +74,11 @@ class Food(BaseModel):
     food_id: int
     name: str
     servings: list[Serving]
+    # Both come free from foods.search and are what makes one candidate
+    # distinguishable from another when choosing: "Per 100g - Calories: 160kcal
+    # | Fat: 14.66g | Carbs: 8.53g | Protein: 2.00g".
+    description: str | None = None
+    brand: str | None = None
 
 
 class Alias(BaseModel):

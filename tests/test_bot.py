@@ -140,3 +140,38 @@ def test_hold_reason_clears_once_the_weight_is_back_in_band() -> None:
     assert bot._hold_reason(q) is not None
     q.item.weight_g = 56.0
     assert bot._hold_reason(q) is None
+
+
+@pytest.mark.parametrize(
+    ("caption", "name", "weight"),
+    [
+        ("Avocado", "Avocado", None),
+        ("56", None, 56.0),
+        ("Avocado 56", "Avocado", 56.0),
+        ("Avocado 56 g", "Avocado", 56.0),
+        ("56,4", None, 56.4),
+        ("  Greek Yogurt  ", "Greek Yogurt", None),
+        ("Fiber One Fulfill Bars", "Fiber One Fulfill Bars", None),
+    ],
+)
+def test_parse_correction(caption: str, name: str | None, weight: float | None) -> None:
+    assert bot.parse_correction(caption) == (name, weight)
+
+
+def test_caption_overrides_the_model_and_relooks_the_alias() -> None:
+    store.save_aliases({"eggs": _alias()})
+    queued = bot._queue_item(_item(product="bread"), "abc", date(2026, 8, 15), "lunch")
+    assert queued.alias is None
+
+    bot._apply_correction(queued, "eggs 200")
+    assert queued.item.product == "eggs"
+    assert queued.item.weight_g == 200.0
+    assert queued.alias is not None
+    assert queued.alias.food_name == "Eggs"
+
+
+def test_correction_without_a_number_keeps_the_read_weight() -> None:
+    queued = bot._queue_item(_item(weight_g=123.0), "abc", date(2026, 8, 15), "lunch")
+    bot._apply_correction(queued, "Avocado")
+    assert queued.item.product == "Avocado"
+    assert queued.item.weight_g == 123.0

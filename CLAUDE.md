@@ -67,6 +67,10 @@ Errors are reported. Anomalies are asked about. The user's own input is not poli
 
 **One re-read before asking.** When a weight falls outside `match.plausible_range`, `bot._reread_hint` builds an instruction naming the first reading and the expected band, and `vision.recognize(..., hint=...)` looks at the same photo again. Landing back in band logs with a `(re-read; first pass said 560 g)` note; otherwise the item is held showing both readings. **Exactly one retry** — guarded by the fact that `_reread` is called once and never recurses. Both weights go to `log.jsonl` as a `reread` event.
 
+**A caption is a correction supplied up front.** `bot.parse_correction` splits a caption or reply into an optional name and an optional trailing weight ("Avocado", "56", "Avocado 56"), and `_apply_correction` applies it before any hold decision. Captions and replies share that one parser deliberately — two copies would drift. Telegram attaches an album caption to the single message it was typed on, not the batch.
+
+**A new food is chosen, never guessed.** `_offer_foods` searches, shows the top three with the macros `foods.search` already returns, and marks any candidate with no gram serving before it can be tapped. The `pick:` callback resolves the serving and saves the alias. The previous `_teach` silently committed the first weighable hit as a permanent alias, so a generic food could become a branded one forever without the user seeing it.
+
 **Corrections are replies, not conversations.** `bot.on_reply` recovers the item from the eight-character id in the quoted message: a numeric reply sets the weight, anything else names the right food and re-teaches the alias. There is deliberately no conversation state machine — `fs_bot` had two `MessageHandler`s in one group and the second never fired.
 
 ## Verification loop

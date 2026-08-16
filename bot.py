@@ -16,7 +16,7 @@ import uuid
 from datetime import date
 from typing import Final
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -30,7 +30,7 @@ import fatsecret
 import match
 import store
 import vision
-from models import Alias, ItemState, QueuedItem, RecognizedItem
+from models import Alias, Food, ItemState, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
 
@@ -106,42 +106,6 @@ async def _submit(queued: QueuedItem, *, record: bool = True) -> str:
     return f"Logged {alias.food_name} — {queued.item.weight_g:g} g"
 
 
-async def _teach(queued: QueuedItem) -> Alias:
-    """Resolve an unknown product to a FatSecret food and learn it.
-
-    Searches by the recognised product text and takes the first result with a
-    weight-based serving. Teaching once is what makes every future photo of
-    the same food submit with no interaction.
-
-    :param queued: Item whose product text needs resolving.
-    :returns: The learned alias, already saved.
-    :raises FatSecretError: If the search returns nothing usable.
-    """
-    # search returns ~20 hits; one get_food each is the burst that trips
-    # FatSecret's error 12. If the top few have no gram serving, the 20th won't.
-    candidates = await fatsecret.search_foods(queued.item.product)
-    for candidate in candidates[:5]:
-        food = await fatsecret.get_food(candidate.food_id)
-        try:
-            serving, _ = match.pick_serving(food, queued.item.weight_g)
-        except match.NoGramServingError:
-            # Branded foods often only sell natural units; skip to one we can weigh.
-            continue
-        alias = Alias(
-            food_id=food.food_id,
-            food_name=food.name,
-            serving_id=serving.serving_id,
-            serving_grams=match.grams_per_unit(serving),
-        )
-        aliases = store.load_aliases()
-        aliases[match.normalize(queued.item.product)] = alias
-        store.save_aliases(aliases)
-        return alias
-    raise fatsecret.FatSecretError(
-        "no_match", f"no weighable food found for {queued.item.product!r}"
-    )
-
-
 def _reread_hint(queued: QueuedItem) -> str | None:
     """Build an instruction for a second look, or ``None`` if none would help.
 
@@ -212,6 +176,106 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
     )
+
+
+def _food_line(index: int, food: Food, weighable: bool) -> str:
+    """Render one search hit as a choosable line.
+
+    :param index: 1-based position, matching the button label.
+    :param food: The candidate, carrying its search-result macro summary.
+    :param weighable: Whether it exposes a gram serving.
+    :returns: Two lines of text.
+    """
+    label = f"{food.name}"
+    if food.brand:
+        label += f" · {food.brand}"
+    if not weighable:
+        label += " — can't log by weight"
+    macros = (food.description or "").replace(" - ", " — ").replace(" | ", " · ")
+    return f"{index}. {label}\n   {macros}"
+
+
+async def _offer_foods(message: Message, queued: QueuedItem, queue: list[QueuedItem]) -> None:
+    """Search FatSecret and offer the top three hits with their macros.
+
+    Replaces silently committing the first weighable hit as a permanent alias.
+    Servings are fetched up front so a candidate that cannot be logged by weight
+    is marked before it is tapped rather than after.
+
+    :param message: The message to reply to.
+    :param queued: The item awaiting a food.
+    :param queue: The queue to persist the sent message id into.
+    """
+    query = queued.item.product
+    try:
+        hits = (await fatsecret.search_foods(query))[:3]
+    except fatsecret.FatSecretError as exc:
+        await message.reply_text(f"Search failed: {exc}")
+        return
+    if not hits:
+        await message.reply_text(f"Nothing found for {query!r}. Reply with another name.")
+        return
+
+    lines, buttons = [], []
+    for position, hit in enumerate(hits, start=1):
+        try:
+            food = await fatsecret.get_food(hit.food_id)
+            match.pick_serving(food, queued.item.weight_g)
+            weighable = True
+        except match.NoGramServingError:
+            weighable = False
+        except fatsecret.FatSecretError:
+            weighable = False
+        lines.append(_food_line(position, hit, weighable))
+        buttons.append(
+            InlineKeyboardButton(str(position), callback_data=f"pick:{queued.id}:{hit.food_id}")
+        )
+    buttons.append(InlineKeyboardButton("Discard", callback_data=f"no:{queued.id}"))
+
+    sent = await message.reply_text(
+        f"{queued.item.weight_g:g} g — which one?\n\n"
+        + "\n".join(lines)
+        + "\n\nReply with a different name to search again.",
+        reply_markup=InlineKeyboardMarkup([buttons]),
+    )
+    for stored in queue:
+        if stored.id == queued.id:
+            stored.message_id = sent.message_id
+    store.save_queue(queue)
+
+
+def parse_correction(text: str) -> tuple[str | None, float | None]:
+    """Split a caption or reply into an optional food name and weight.
+
+    ``"Avocado"`` names the food, ``"56"`` sets the weight, ``"Avocado 56"``
+    does both. Shared by captions and replies so the two cannot drift apart.
+
+    :param text: Raw caption or reply text.
+    :returns: ``(name, weight)``, either of which may be ``None``.
+    """
+    cleaned = text.strip().replace(",", ".")
+    trailing = re.search(r"(?:^|\s)(\d+(?:\.\d+)?)\s*(?:g|grams?)?$", cleaned, re.IGNORECASE)
+    weight = float(trailing.group(1)) if trailing else None
+    name = cleaned[: trailing.start()].strip() if trailing else cleaned
+    return (name or None), weight
+
+
+def _apply_correction(queued: QueuedItem, text: str) -> None:
+    """Overwrite a recognised item from what the user actually said.
+
+    The user naming the food outranks the model guessing at it, so the alias is
+    re-resolved against their text rather than the model's.
+
+    :param queued: The item to correct, modified in place.
+    :param text: Caption or reply text.
+    """
+    name, weight = parse_correction(text)
+    if name is not None:
+        queued.item.product = name
+        queued.alias = match.lookup(name, store.load_aliases())
+    if weight is not None:
+        queued.item.weight_g = weight
+        queued.item.raw_digits = f"{weight:g}"
 
 
 def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
@@ -311,6 +375,8 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     for item in recognition.items:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
+        if message.caption:
+            _apply_correction(queued, message.caption)
 
         # One re-read, never a loop: a hint that fails to settle the reading is
         # not going to settle it on the third try either.
@@ -343,8 +409,12 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if logged:
         await message.reply_text("\n".join(logged))
+    store.save_queue(queue)
     # Each held item gets its own message so a reply lands on exactly one item.
     for queued, reason in held:
+        if queued.alias is None:
+            await _offer_foods(message, queued, queue)
+            continue
         sent = await message.reply_text(
             f"{_describe(queued)}\n{reason}\n"
             "Reply with a number to fix the weight, or a name to fix the food.",
@@ -375,13 +445,12 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     if queued is None:
         return  # a reply to something that is not a held item
 
-    reply = message.text.strip().replace(",", ".")
+    _apply_correction(queued, message.text)
+    if queued.alias is None:
+        store.save_queue(queue)
+        await _offer_foods(message, queued, queue)
+        return
     try:
-        if re.fullmatch(r"\d+(?:\.\d+)?", reply):
-            queued.item.weight_g = float(reply)
-        else:
-            queued.item.product = reply
-            queued.alias = await _teach(queued)
         text = await _submit(queued, record=True)
         queued.state = ItemState.SUBMITTED
     except (fatsecret.FatSecretError, match.NoGramServingError, ValueError) as exc:
@@ -424,6 +493,9 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     if query is None or query.data is None:
         return
     await query.answer()
+    # Telegram exposes the message as possibly-inaccessible (too old to act on),
+    # so narrow it once here rather than at each use.
+    origin = query.message if isinstance(query.message, Message) else None
     action, _, item_id = query.data.partition(":")
 
     queue = store.load_queue()
@@ -432,16 +504,47 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
         await query.edit_message_text("That item is gone.")
         return
 
+    if action == "pick":
+        item_id, _, food_id = item_id.partition(":")
+        queued = next((i for i in queue if i.id == item_id), None)
+        if queued is None:
+            await query.edit_message_text("That item is gone.")
+            return
+        try:
+            food = await fatsecret.get_food(int(food_id))
+            serving, _units = match.pick_serving(food, queued.item.weight_g)
+            queued.alias = Alias(
+                food_id=food.food_id,
+                food_name=food.name,
+                serving_id=serving.serving_id,
+                serving_grams=match.grams_per_unit(serving),
+            )
+            aliases = store.load_aliases()
+            aliases[match.normalize(queued.item.product)] = queued.alias
+            store.save_aliases(aliases)
+            text = await _submit(queued, record=True)
+            queued.state = ItemState.SUBMITTED
+        except (fatsecret.FatSecretError, match.NoGramServingError) as exc:
+            await query.edit_message_text(
+                f"{origin.text if origin else ''}\n\nCan't use that one: {exc}"
+            )
+            return
+        store.save_queue(queue)
+        await query.edit_message_text(text)
+        return
+
     if action == "no":
         queued.state = ItemState.DISCARDED
         store.save_queue(queue)
         await query.edit_message_text(f"Discarded {queued.id[:8]}.")
         return
 
+    if queued.alias is None:
+        if origin is not None:
+            await _offer_foods(origin, queued, queue)
+        return
     try:
-        if queued.alias is None:
-            queued.alias = await _teach(queued)
-        text = await _submit(queued)
+        text = await _submit(queued, record=True)
         queued.state = ItemState.SUBMITTED
     except (fatsecret.FatSecretError, match.NoGramServingError) as exc:
         # Paste-able fallback: the user can still enter it by hand.

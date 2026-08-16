@@ -361,3 +361,33 @@ async def test_calls_are_spaced_to_survive_a_bulk_album(
         await search_foods("egg")
     elapsed = time.monotonic() - start
     assert elapsed >= 2 * fatsecret._MIN_CALL_INTERVAL
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_search_keeps_macros_and_brand_for_the_picker() -> None:
+    respx.post(fatsecret._API_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "foods": {
+                    "food": [
+                        {
+                            "food_id": "66325",
+                            "food_name": "Avocado",
+                            "brand_name": "Calavo",
+                            "food_description": "Per 1 avocado - Calories: 227kcal",
+                        },
+                        {"food_id": "35752", "food_name": "Avocados"},
+                    ]
+                }
+            },
+        )
+    )
+    branded, generic = await search_foods("avocado")
+    assert branded.brand == "Calavo"
+    assert branded.description is not None
+    assert "227kcal" in branded.description
+    # Absent fields stay None rather than becoming empty strings.
+    assert generic.brand is None
+    assert generic.description is None

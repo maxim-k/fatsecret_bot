@@ -75,7 +75,11 @@ Send the bot a photo of food on the scale, with the display readable in frame.
 | `/today` | Show today's FatSecret diary |
 | `/undo` | Remove the most recently logged entry |
 
-A known food with a confident reading is logged immediately. A new food, or a reading the model wasn't sure about, is held for `/pending`. Approving a new food teaches it — from then on it logs itself.
+Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. The caption wins over whatever the model reads.
+
+A known food is logged immediately. A new one shows the top three FatSecret matches with their macros — tap one and it's logged and remembered. A weight unlike anything you've logged for that food is re-read once, then held.
+
+Reply to any held item: a number fixes the weight, a name fixes the food.
 
 Every reply shows the raw digits the model read alongside the parsed weight, so a misread is visible before it becomes a wrong calorie count.
 

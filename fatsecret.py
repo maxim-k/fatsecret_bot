@@ -231,8 +231,8 @@ async def search_foods(query: str) -> list[Food]:
     """Search FatSecret's food database by free-text query.
 
     :param query: Free-text search string, e.g. a product name.
-    :returns: Matching foods. ``servings`` is empty on each result; call
-        :func:`get_food` for a specific food's servings.
+    :returns: Matching foods, each carrying the search result's macro summary
+        and brand. ``servings`` is empty; call :func:`get_food` for those.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     body = await _request(
@@ -242,7 +242,13 @@ async def search_foods(query: str) -> list[Food]:
     )
     raw_foods = _as_list((body.get("foods") or {}).get("food"))
     return [
-        Food(food_id=int(food["food_id"]), name=food["food_name"], servings=[])
+        Food(
+            food_id=int(food["food_id"]),
+            name=food["food_name"],
+            servings=[],
+            description=food.get("food_description"),
+            brand=food.get("brand_name"),
+        )
         for food in raw_foods
     ]
 
