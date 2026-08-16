@@ -126,9 +126,10 @@ async def test_recognize_uses_env_model_override(
     assert fake_client.messages.last_kwargs["model"] == "claude-sonnet-5"
 
 
-def test_model_id_defaults_to_haiku(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_model_defaults_to_sonnet(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    assert vision._DEFAULT_MODEL == "claude-haiku-4-5"
+    # Haiku 4.5 misread this user's scale three times out of three.
+    assert vision._DEFAULT_MODEL == "claude-sonnet-5"
 
 
 def _prompt_text(fake_client: _FakeClient) -> str:
