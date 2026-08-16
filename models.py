@@ -109,6 +109,9 @@ class QueuedItem(BaseModel):
     item: RecognizedItem
     alias: Alias | None = None
     state: ItemState = ItemState.PENDING
+    # Telegram id of the message describing this item, so a reply to it can be
+    # traced back here without printing a queue id at the user.
+    message_id: int | None = None
 
 
 class DiaryEntry(BaseModel):

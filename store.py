@@ -149,3 +149,18 @@ def append_log(event: str, payload: dict[str, object]) -> None:
     }
     with (_data_dir() / _LOG_FILENAME).open("a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def save_photo(photo_sha256: str, data: bytes) -> None:
+    """Keep a copy of an incoming photo.
+
+    Kept so model accuracy can be measured offline over real images rather than
+    argued about, and so a re-read is possible after the request that carried
+    the bytes has finished.
+
+    :param photo_sha256: SHA-256 hex digest of the photo, used as the filename.
+    :param data: The image bytes exactly as received.
+    """
+    photos = _data_dir() / "photos"
+    photos.mkdir(exist_ok=True)
+    (photos / f"{photo_sha256}.jpg").write_bytes(data)

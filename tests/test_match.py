@@ -287,8 +287,11 @@ def test_is_outlier_allows_a_wide_but_real_history() -> None:
     assert is_outlier(900.0, tomatoes)
 
 
-def test_plausible_range_is_the_observed_range_plus_a_quarter() -> None:
-    assert match_plausible([100.0, 200.0]) == (75.0, 250.0)
+def test_plausible_range_widens_when_evidence_is_thin() -> None:
+    # Under five samples the margin doubles: mango logged twice at 145 and 188 g
+    # must not make a real 289 g portion look like a misread.
+    assert match_plausible([100.0, 200.0]) == (50.0, 400.0)
+    assert match_plausible([100.0] * 5 + [200.0]) == (75.0, 250.0)
     # Always logged at 190 g still leaves room for ordinary variation.
     assert not is_outlier(200.0, [190.0] * 5)
     assert is_outlier(1900.0, [190.0] * 5)
@@ -302,3 +305,24 @@ def test_is_outlier_allows_ordinary_variation() -> None:
 
 def test_is_outlier_passes_everything_with_no_history() -> None:
     assert not is_outlier(999.0, [])
+
+
+def test_lookup_falls_back_to_token_containment() -> None:
+    # The model wrote "bread" where it had previously written the full name.
+    aliases = {
+        "bread alone san francisco sourdough": _alias(),
+        "wasa whole grain crispbread": _alias(),
+    }
+    assert lookup("bread", aliases) is not None
+    assert lookup("Bread", aliases) is not None
+
+
+def test_lookup_returns_none_when_two_aliases_match() -> None:
+    aliases = {"greek yogurt plain": _alias(), "greek yogurt honey": _alias()}
+    assert lookup("greek yogurt", aliases) is None
+
+
+def test_lookup_prefers_an_exact_match() -> None:
+    exact = Alias(food_id=7, food_name="Bread", serving_id=1, serving_grams=1.0)
+    aliases = {"bread": exact, "bread alone san francisco sourdough": _alias()}
+    assert lookup("bread", aliases) is exact

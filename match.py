@@ -70,14 +70,44 @@ def normalize(product: str) -> str:
 
 
 def lookup(product: str, aliases: dict[str, Alias]) -> Alias | None:
-    """Resolve product text to a learned alias by exact normalized match.
+    """Resolve product text to a learned alias.
+
+    Exact match first, then token containment. The model names the same food
+    differently between runs — "Bread Alone San Francisco Sourdough" one time,
+    "bread" the next — so keying on the exact string it happens to produce turns
+    a food logged four times into a new one. Tokens are compared whole, so
+    "bread" does not match "crispbread".
+
+    Two or more candidates means the text is genuinely ambiguous; that is a
+    question for the user, not a coin flip, so it resolves to ``None``.
 
     :param product: Raw product text to resolve.
     :param aliases: Known aliases, keyed by :func:`normalize`-d product text.
-    :returns: The matching alias, or ``None`` if this product was never
-        taught.
+    :returns: The matching alias, or ``None`` if unknown or ambiguous.
     """
-    return aliases.get(normalize(product))
+    key = normalize(product)
+    exact = aliases.get(key)
+    if exact is not None:
+        return exact
+    matches = [aliases[k] for k in candidates(key, aliases)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def candidates(key: str, aliases: dict[str, Alias]) -> list[str]:
+    """Alias keys whose tokens subsume, or are subsumed by, ``key``.
+
+    :param key: A :func:`normalize`-d product string.
+    :param aliases: Known aliases.
+    :returns: Matching alias keys, empty if none.
+    """
+    wanted = set(key.split())
+    if not wanted:
+        return []
+    return [
+        alias_key
+        for alias_key in aliases
+        if wanted <= set(alias_key.split()) or set(alias_key.split()) <= wanted
+    ]
 
 
 def units_for(serving_grams: float, grams: float) -> float:
@@ -166,7 +196,11 @@ def plausible_range(history: list[float]) -> tuple[float, float] | None:
     """
     if not history:
         return None
-    return min(history) * 0.75, max(history) * 1.25
+    # A handful of samples is not the range of portions this food can take, so
+    # the margin starts loose and tightens as evidence accumulates. Mango logged
+    # twice at 145 and 188 g must not make a real 289 g portion an anomaly.
+    low, high = (0.5, 2.0) if len(history) < 5 else (0.75, 1.25)
+    return min(history) * low, max(history) * high
 
 
 def is_outlier(grams: float, history: list[float]) -> bool:

@@ -34,9 +34,11 @@ from models import Alias, ItemState, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
 
-# Auto-approve a confident reading of a known food; anything shakier gets asked
-# about. This gates the model's output, never the user's input.
-AUTO_SUBMIT_CONFIDENCE: Final = 0.8
+# The model reports 0.0 when it could not actually read the display (see
+# vision._SYSTEM_PROMPT), and vision._digits_agree forces the same value when a
+# reading contradicts its own transcription. Nothing between 0 and 1 is worth
+# gating on: a self-graded 0.75 held two correct readings.
+UNREADABLE: Final = 0.0
 
 
 def _owner_id() -> int:
@@ -60,16 +62,16 @@ def _describe(queued: QueuedItem) -> str:
     """
     item = queued.item
     name = queued.alias.food_name if queued.alias else item.product
-    return (
-        f"`{queued.id[:8]}` {name} — {item.weight_g:g} g "
-        f"(read “{item.raw_digits}”, confidence {item.confidence:.0%})"
-    )
+    return f"{name} — {item.weight_g:g} g (read “{item.raw_digits}”)"
 
 
-async def _submit(queued: QueuedItem) -> str:
+async def _submit(queued: QueuedItem, *, record: bool = True) -> str:
     """Write one queued item to the FatSecret diary.
 
     :param queued: Item carrying a resolved alias.
+    :param record: Whether to fold this weight into the alias's history. False
+        for a reading that only got through because nothing could check it — a
+        wrong value must not widen the band meant to catch wrong values.
     :returns: A chat-ready confirmation line.
     :raises RuntimeError: If the item has no alias resolved yet.
     """
@@ -87,7 +89,7 @@ async def _submit(queued: QueuedItem) -> str:
     )
     aliases = store.load_aliases()
     key = match.normalize(queued.item.product)
-    if key in aliases:
+    if record and key in aliases:
         # Keep the recent tail only; portion sizes drift over months.
         aliases[key].weights = [*aliases[key].weights, queued.item.weight_g][-20:]
         aliases[key].hits += 1
@@ -152,6 +154,12 @@ def _reread_hint(queued: QueuedItem) -> str | None:
     """
     if queued.alias is None:
         return None
+    if queued.item.confidence <= UNREADABLE:
+        return (
+            "A previous read of this photo could not settle the weight. Read the "
+            "display again, reporting only the large seven-segment digits and "
+            "ignoring unit labels and status marks beside them."
+        )
     bounds = match.plausible_range(queued.alias.weights)
     if bounds is None or bounds[0] <= queued.item.weight_g <= bounds[1]:
         return None
@@ -179,8 +187,8 @@ def _hold_reason(queued: QueuedItem) -> str | None:
     """
     if queued.alias is None:
         return "New food."
-    if queued.item.confidence < AUTO_SUBMIT_CONFIDENCE:
-        return "Low confidence."
+    if queued.item.confidence <= UNREADABLE:
+        return "Couldn't read the display."
     bounds = match.plausible_range(queued.alias.weights)
     if bounds is not None and not bounds[0] <= queued.item.weight_g <= bounds[1]:
         return f"Unusual weight — expected {bounds[0]:.0f}-{bounds[1]:.0f} g."
@@ -203,6 +211,22 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
         meal=meal,
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
+    )
+
+
+def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
+    """Approve/discard buttons for one held item.
+
+    :param queued: The item the buttons act on.
+    :returns: A one-row keyboard.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("Approve", callback_data=f"ok:{queued.id}"),
+                InlineKeyboardButton("Discard", callback_data=f"no:{queued.id}"),
+            ]
+        ]
     )
 
 
@@ -255,6 +279,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     telegram_file = await message.get_bot().get_file(file_id)
     image_bytes = bytes(await telegram_file.download_as_bytearray())
     digest = hashlib.sha256(image_bytes).hexdigest()
+    store.save_photo(digest, image_bytes)
 
     aliases = store.load_aliases()
     # Most-eaten first: the candidate list is capped, and the model can only
@@ -280,7 +305,8 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     # on the vision call in between. Raising concurrency loses queue entries when
     # several photos arrive together — switch to append-only or a lock if so.
     queue = store.load_queue()
-    lines: list[str] = []
+    logged: list[str] = []
+    held: list[tuple[QueuedItem, str]] = []
 
     for item in recognition.items:
         queued = _queue_item(item, digest, day, meal)
@@ -307,20 +333,27 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         hold = _hold_reason(queued)
         if hold is None:
             try:
-                lines.append(await _submit(queued) + note)
+                logged.append(await _submit(queued) + note)
                 queued.state = ItemState.SUBMITTED
             except fatsecret.FatSecretError as exc:
-                # The sink failing must not lose the item — keep it reviewable.
-                lines.append(f"{_describe(queued)}\nFatSecret error: {exc}")
+                held.append((queued, f"FatSecret error: {exc}"))
         else:
-            lines.append(
-                f"{_describe(queued)}\n{hold}{note}\n"
-                "Reply with a number to fix the weight, or a name to fix the food."
-            )
+            held.append((queued, f"{hold}{note}"))
         queue.append(queued)
 
+    if logged:
+        await message.reply_text("\n".join(logged))
+    # Each held item gets its own message so a reply lands on exactly one item.
+    for queued, reason in held:
+        sent = await message.reply_text(
+            f"{_describe(queued)}\n{reason}\n"
+            "Reply with a number to fix the weight, or a name to fix the food.",
+            reply_markup=_review_keyboard(queued),
+        )
+        queued.message_id = sent.message_id
+    if not logged and not held:
+        await message.reply_text("Nothing recognised in that photo.")
     store.save_queue(queue)
-    await message.reply_text("\n\n".join(lines) or "Nothing recognised in that photo.")
 
 
 async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -336,16 +369,11 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None or message.text is None or message.reply_to_message is None:
         return
-    quoted = message.reply_to_message.text or ""
-    short_id = re.match(r"\s*`?([0-9a-f]{8})`?", quoted)
-    if short_id is None:
-        return  # a reply to something else entirely
-
     queue = store.load_queue()
-    queued = next((i for i in queue if i.id.startswith(short_id.group(1))), None)
+    replied_to = message.reply_to_message.message_id
+    queued = next((i for i in queue if i.message_id == replied_to), None)
     if queued is None:
-        await message.reply_text("That item is gone.")
-        return
+        return  # a reply to something that is not a held item
 
     reply = message.text.strip().replace(",", ".")
     try:
@@ -354,7 +382,7 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             queued.item.product = reply
             queued.alias = await _teach(queued)
-        text = await _submit(queued)
+        text = await _submit(queued, record=True)
         queued.state = ItemState.SUBMITTED
     except (fatsecret.FatSecretError, match.NoGramServingError, ValueError) as exc:
         await message.reply_text(f"Couldn't submit: {exc}")
@@ -377,16 +405,13 @@ async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
     if not pending:
         await message.reply_text("Nothing pending.")
         return
+    queue = store.load_queue()
     for queued in pending:
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("Approve", callback_data=f"ok:{queued.id}"),
-                    InlineKeyboardButton("Discard", callback_data=f"no:{queued.id}"),
-                ]
-            ]
-        )
-        await message.reply_text(_describe(queued), reply_markup=keyboard)
+        sent = await message.reply_text(_describe(queued), reply_markup=_review_keyboard(queued))
+        for stored in queue:
+            if stored.id == queued.id:
+                stored.message_id = sent.message_id
+    store.save_queue(queue)
 
 
 async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:

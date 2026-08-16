@@ -55,9 +55,9 @@ def test_describe_surfaces_raw_digits_so_a_misread_is_visible() -> None:
         alias=_alias(),
     )
     text = bot._describe(queued)
-    assert "01234567" in text
     assert "123" in text
-    assert "95%" in text
+    # The queue id is an implementation detail and must not leak into chat.
+    assert "01234567" not in text
 
 
 def test_describe_falls_back_to_recognised_product_when_unmatched() -> None:

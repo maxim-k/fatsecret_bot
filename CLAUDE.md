@@ -106,13 +106,17 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 - Basic tier is **US-only dataset**. This is a non-issue: the user lives in the US and logs US-catalogue foods exclusively. Physical Life treats the diary as a plain nutrient tracker and does not care about the food's source. Aliases are seeded from the user's own diary history rather than search (37 seeded from August 2025).
 
 **Vision**
-- `weight_g` is required and `> 0`, so the model cannot express "unreadable". **`confidence: 0.0` is the agreed signal** that the weight was not actually read. The auto-submit gate blocks it. Do not remove this convention without replacing it.
+- `weight_g` is required and `> 0`, so the model cannot express "unreadable". **`confidence: 0.0` is the agreed signal** that the weight was not actually read; `bot.UNREADABLE` is the only confidence value that holds an item. Anything between 0 and 1 is self-graded noise — a 0.75 once held two correct readings.
+- `_digits_agree` is a **containment** check, not equality. The scale prints unit and mode glyphs, so a display reading 379 arrives as `raw_digits="8379h"`. Requiring equality rejected correct readings.
 - **Never downsample the image.** The scale's LCD is often a small part of the frame and resolution is what makes it legible.
 - Must use `AsyncAnthropic`. A sync client inside a Telegram handler blocks the whole event loop.
-- Default model is `claude-haiku-4-5` **deliberately** — it is the cheap option pending a real-photo accuracy check. Do not silently upgrade it.
+- Default model is `claude-sonnet-5`. Haiku 4.5 was tried first and read a display showing **117 g as 170, 170 and 110** across three attempts; prompt work did not move it. Every photo is now kept in `DATA_DIR/photos/`, so re-run the comparison over real images before changing this again.
 
 **Matching**
 - A serving in **ml is not interchangeable with grams**. Treating 1 ml as 1 g misreports calories for anything that isn't water. `pick_serving` skips them.
+- `lookup` is **not** exact string matching. The model names the same food differently between runs ("Bread Alone San Francisco Sourdough" then "bread"), so it falls back to whole-token containment and returns `None` when two aliases match rather than guessing.
+- `plausible_range` widens its margin below five samples (x0.5/x2.0 instead of x0.75/x1.25). A food logged twice has not shown its real range.
+- Weights only enter `Alias.weights` when the item logged **without** a hold or the user approved it. A misread that slipped through must not widen the band meant to catch misreads.
 
 **Telegram**
 - Compressed photos smear the digits and strip EXIF. **Prefer `Document` over `PhotoSize`** when both are present.

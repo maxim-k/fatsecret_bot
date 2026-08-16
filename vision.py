@@ -22,10 +22,10 @@ from anthropic.types import MessageParam
 
 from models import Recognition, RecognizedItem
 
-# Deliberately the cheap model — see .env.example. The user upgrades to
-# claude-sonnet-5 (then claude-opus-5) only if raw_digits proves unreliable on
-# real photos, so this default must never silently drift to a pricier model.
-_DEFAULT_MODEL: Final = "claude-haiku-4-5"
+# Haiku 4.5 read this user's scale as 170, 170 and 110 for a display showing
+# 117, and no amount of prompt work moved it. Changed on measurement, not taste;
+# data/photos/ keeps the corpus to re-measure against.
+_DEFAULT_MODEL: Final = "claude-sonnet-5"
 
 # Matches anthropic.types.base64_image_source_param.Base64ImageSourceParam's
 # media_type field. Kept as a separate alias (rather than importing the SDK's
@@ -229,14 +229,20 @@ async def recognize(
 def _digits_agree(item: RecognizedItem) -> bool:
     """Check the parsed weight against the digits the model says it saw.
 
-    Observed live: ``raw_digits="170"`` alongside ``weight_g=170.1``.
+    Containment, not equality: the scale prints unit and mode glyphs beside the
+    number, so a display reading 379 comes back as ``"8379h"``. Demanding an
+    exact match rejected correct readings for noise. What must hold is that the
+    reported weight actually appears in the transcription — ``"170"`` alongside
+    ``weight_g=170.1`` still fails, which is the case this was written for.
 
     :param item: One recognised item straight from the model.
-    :returns: ``True`` if the two agree, or a unit conversion explains it.
+    :returns: ``True`` if the reported weight appears in the transcription, or a
+        unit conversion explains the difference.
     """
     if re.search(r"oz|lb|kg", item.raw_digits, re.IGNORECASE):
         return True  # converting to grams legitimately changes the number
-    number = re.search(r"\d+(?:[.,]\d+)?", item.raw_digits)
-    if number is None:
+    digits = re.sub(r"[^0-9.]", "", item.raw_digits)
+    if not digits:
         return False
-    return abs(float(number.group().replace(",", ".")) - item.weight_g) < 0.05
+    reported = f"{item.weight_g:g}"
+    return reported in digits or reported.rstrip("0").rstrip(".") in digits
