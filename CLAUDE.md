@@ -86,7 +86,7 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 - **Errors arrive as HTTP 200** with an `error` object in the body. Status codes alone are not enough.
 - A single result comes back as an **object**; multiple come back as a **list**. Numbers arrive as **strings**. `fatsecret._as_list` and `_num` normalise both — use them.
 - **IP whitelisting is mandatory.** Basic tier allows 15 individual addresses, no CIDR. A changing home IP or a new VPS will break auth with a confusing error.
-- **Verified against the live API (2026-08-15):** `search_foods`, `get_food` and `list_diary` all work as implemented. `create_entry` and `delete_entry` are still unexercised — they write, so test them deliberately.
+- **All five calls verified against the live API (2026-08-15)**, including a create/read-back/delete round trip that left the diary as it started.
 - **Short-term throttling is real and undocumented**: bursts return HTTP 200 with `error 12`, "User is performing too many actions". This is separate from the 5,000/day cap and clears on its own. Keep bulk reads sequential with a ~1.5 s delay; do not fan out with `asyncio.gather`.
 - A food logged from a non-US regional dataset can return `error 106 Invalid ID` when looked up on the Basic tier. Skip and continue rather than aborting a bulk operation.
 - Liquids (milk, protein shakes, beer) usually expose only **ml** servings, so `pick_serving` rejects them by design and they land in the review queue. That is correct, not a bug — grams and millilitres are not interchangeable.

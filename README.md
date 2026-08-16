@@ -126,7 +126,6 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 
 ## Status and known limits
 
-- **The two write endpoints are still unexercised.** `search_foods`, `get_food` and `list_diary` are verified against the real API; `create_entry` and `delete_entry` have never been run.
 - **Meals aren't split.** Everything logs to `other`; FatSecret requires a meal and the bot never picks one.
 - **Whether Physical Life backfills older entries is unknown.** If it only syncs recent ones, the catch-up-on-a-week-of-backlog use case doesn't work and the bot becomes same-day only.
 - The model defaults to `claude-haiku-4-5` on cost grounds. If it misreads scale digits, set `ANTHROPIC_MODEL=claude-sonnet-5` — check the `raw_digits` field on your first batch of real photos before deciding.
