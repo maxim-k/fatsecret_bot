@@ -71,7 +71,11 @@ Errors are reported. Anomalies are asked about. The user's own input is not poli
 
 **A new food is chosen, never guessed.** `_offer_foods` searches, shows the top three with the macros `foods.search` already returns, and marks any candidate with no gram serving before it can be tapped. The `pick:` callback resolves the serving and saves the alias. The previous `_teach` silently committed the first weighable hit as a permanent alias, so a generic food could become a branded one forever without the user seeing it.
 
-**Corrections are replies, not conversations.** `bot.on_reply` recovers the item from the eight-character id in the quoted message: a numeric reply sets the weight, anything else names the right food and re-teaches the alias. There is deliberately no conversation state machine — `fs_bot` had two `MessageHandler`s in one group and the second never fired.
+**A logged item can still be corrected.** Replying to "Logged Egg — 108 g" with `118` deletes that FatSecret entry, writes a new one, and **replaces** the wrong weight in `Alias.weights` rather than appending — otherwise a misread keeps widening the band that exists to catch misreads. `QueuedItem.food_entry_id` exists for exactly this. Each logged item gets its own message so a reply resolves to one item.
+
+**Callback data is split once, up front.** `action, item_id, *extra = query.data.split(":")`. Splitting on the first colon only made `pick:ID:FOOD` look up an item id of `"ID:FOOD"`, so every pick answered "That item is gone" — the picker was dead on arrival for a full release. Test the routing, not only the handlers it dispatches to.
+
+**Corrections are replies, not conversations.** `bot.on_reply` recovers the item from the quoted message id: a numeric reply sets the weight, anything else names the right food and re-teaches the alias. There is deliberately no conversation state machine — `fs_bot` had two `MessageHandler`s in one group and the second never fired.
 
 ## Verification loop
 
@@ -114,7 +118,8 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 - `_digits_agree` is a **containment** check, not equality. The scale prints unit and mode glyphs, so a display reading 379 arrives as `raw_digits="8379h"`. Requiring equality rejected correct readings.
 - **Never downsample the image.** The scale's LCD is often a small part of the frame and resolution is what makes it legible.
 - Must use `AsyncAnthropic`. A sync client inside a Telegram handler blocks the whole event loop.
-- Default model is `claude-sonnet-5`. Haiku 4.5 was tried first and read a display showing **117 g as 170, 170 and 110** across three attempts; prompt work did not move it. Every photo is now kept in `DATA_DIR/photos/`, so re-run the comparison over real images before changing this again.
+- **Two models, by speed.** `claude-haiku-4-5` reads every photo (2-4 s); `claude-sonnet-5` re-reads only the doubtful ones (6-12 s). Haiku misread this scale as 170, 170 and 110 for a display showing 117, and prompt work did not move it, so it is never trusted alone on a questionable reading. Both timings measured from `log.jsonl`; `DATA_DIR/photos/` keeps the corpus to re-measure against.
+- **Confidence buys compute, it does not interrupt the user.** Below `bot.SHAKY` (0.5) the photo is re-read by the stronger model; only an explicit `0.0` holds. A self-graded 0.75 once held two correct readings, which is why it no longer gates anything user-facing.
 
 **Matching**
 - A serving in **ml is not interchangeable with grams**. Treating 1 ml as 1 g misreports calories for anything that isn't water. `pick_serving` skips them.

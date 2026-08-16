@@ -40,6 +40,11 @@ log = logging.getLogger(__name__)
 # gating on: a self-graded 0.75 held two correct readings.
 UNREADABLE: Final = 0.0
 
+# Below this, Haiku's reading is worth a second opinion from the slower model.
+# The score is too noisy to interrupt the user over, but good enough to decide
+# where to spend eight more seconds.
+SHAKY: Final = 0.5
+
 
 def _owner_id() -> int:
     """Read the single permitted Telegram user id.
@@ -65,13 +70,16 @@ def _describe(queued: QueuedItem) -> str:
     return f"{name} — {item.weight_g:g} g (read “{item.raw_digits}”)"
 
 
-async def _submit(queued: QueuedItem, *, record: bool = True) -> str:
+async def _submit(queued: QueuedItem, *, record: bool = True, replaces: float | None = None) -> str:
     """Write one queued item to the FatSecret diary.
 
     :param queued: Item carrying a resolved alias.
     :param record: Whether to fold this weight into the alias's history. False
         for a reading that only got through because nothing could check it — a
         wrong value must not widen the band meant to catch wrong values.
+    :param replaces: A previously recorded weight to drop from the history,
+        set when this submission corrects an earlier one. Without it a misread
+        keeps widening the band that exists to catch misreads.
     :returns: A chat-ready confirmation line.
     :raises RuntimeError: If the item has no alias resolved yet.
     """
@@ -90,10 +98,14 @@ async def _submit(queued: QueuedItem, *, record: bool = True) -> str:
     aliases = store.load_aliases()
     key = match.normalize(queued.item.product)
     if record and key in aliases:
+        weights = aliases[key].weights
+        if replaces is not None and replaces in weights:
+            weights = [w for w in weights if w != replaces]
         # Keep the recent tail only; portion sizes drift over months.
-        aliases[key].weights = [*aliases[key].weights, queued.item.weight_g][-20:]
+        aliases[key].weights = [*weights, queued.item.weight_g][-20:]
         aliases[key].hits += 1
         store.save_aliases(aliases)
+    queued.food_entry_id = entry.food_entry_id
     store.append_log(
         "submitted",
         {
@@ -109,16 +121,17 @@ async def _submit(queued: QueuedItem, *, record: bool = True) -> str:
 def _reread_hint(queued: QueuedItem) -> str | None:
     """Build an instruction for a second look, or ``None`` if none would help.
 
-    Only a weight the food's own history contradicts is worth re-reading: a new
-    food has nothing to compare against, and a display the model already called
-    illegible will not become legible on a second pass.
+    Fires when the fast model's answer is doubtful: the weight contradicts the
+    food's own history, the reading contradicts its own transcription, or the
+    model graded itself low. A new food is skipped — there is nothing to compare
+    against, and the picker is about to ask anyway.
 
     :param queued: The item the first pass produced.
     :returns: Text to append to the retry prompt, or ``None``.
     """
     if queued.alias is None:
         return None
-    if queued.item.confidence <= UNREADABLE:
+    if queued.item.confidence < SHAKY:
         return (
             "A previous read of this photo could not settle the weight. Read the "
             "display again, reporting only the large seven-segment digits and "
@@ -301,7 +314,7 @@ async def _reread(
     hint: str,
     queued: QueuedItem,
 ) -> RecognizedItem | None:
-    """Ask the model to look at the same photo once more.
+    """Ask the stronger model to look at the same photo once more.
 
     :param image_bytes: The original photo, unmodified.
     :param media_type: Its MIME type.
@@ -312,7 +325,9 @@ async def _reread(
         describing something else.
     """
     try:
-        second = await vision.recognize(image_bytes, media_type, recent, hint=hint)
+        second = await vision.recognize(
+            image_bytes, media_type, recent, hint=hint, model=vision.escalation_model()
+        )
     except vision.RecognitionError:
         return None  # the first reading still stands and will be held
     # A multi-item plate can come back in a different order, so match on the name
@@ -369,7 +384,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     # on the vision call in between. Raising concurrency loses queue entries when
     # several photos arrive together — switch to append-only or a lock if so.
     queue = store.load_queue()
-    logged: list[str] = []
+    logged: list[tuple[QueuedItem, str]] = []
     held: list[tuple[QueuedItem, str]] = []
 
     for item in recognition.items:
@@ -388,7 +403,12 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
             if retried is not None:
                 store.append_log(
                     "reread",
-                    {"item_id": queued.id, "first": first, "second": retried.weight_g},
+                    {
+                        "item_id": queued.id,
+                        "first": first,
+                        "second": retried.weight_g,
+                        "model": vision.escalation_model(),
+                    },
                 )
                 queued.item = retried
                 if _hold_reason(queued) is None:
@@ -399,7 +419,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         hold = _hold_reason(queued)
         if hold is None:
             try:
-                logged.append(await _submit(queued) + note)
+                logged.append((queued, await _submit(queued) + note))
                 queued.state = ItemState.SUBMITTED
             except fatsecret.FatSecretError as exc:
                 held.append((queued, f"FatSecret error: {exc}"))
@@ -407,8 +427,11 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
             held.append((queued, f"{hold}{note}"))
         queue.append(queued)
 
-    if logged:
-        await message.reply_text("\n".join(logged))
+    # One message per logged item: a reply has to resolve to exactly one thing,
+    # and a plate with several foods would otherwise be ambiguous.
+    for queued, text in logged:
+        sent = await message.reply_text(text)
+        queued.message_id = sent.message_id
     store.save_queue(queue)
     # Each held item gets its own message so a reply lands on exactly one item.
     for queued, reason in held:
@@ -427,10 +450,12 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Correct a held item by replying to the message describing it.
+    """Correct an item by replying to the message describing it.
 
-    A numeric reply fixes the weight, anything else names the right food. The
-    item is recovered from the short id printed in the quoted message, so no
+    Works on a held item and on one already logged: a number fixes the weight,
+    anything else names the right food. An already-logged item has its FatSecret
+    entry deleted and rewritten, so a correction never leaves two entries for one
+    portion. The item is found by the id of the quoted message, so no
     conversation state has to be tracked between messages.
 
     :param update: Incoming reply.
@@ -443,7 +468,21 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     replied_to = message.reply_to_message.message_id
     queued = next((i for i in queue if i.message_id == replied_to), None)
     if queued is None:
-        return  # a reply to something that is not a held item
+        return  # a reply to something that is not one of our items
+
+    # Correcting something already logged means replacing it, not adding to it.
+    superseded: float | None = None
+    if queued.state == ItemState.SUBMITTED and queued.food_entry_id is not None:
+        superseded = queued.item.weight_g
+        try:
+            await fatsecret.delete_entry(queued.food_entry_id)
+        except fatsecret.FatSecretError as exc:
+            # Stop rather than risk two entries for one portion.
+            await message.reply_text(f"Couldn't remove the old entry: {exc}")
+            return
+        store.append_log("corrected", {"item_id": queued.id, "removed_entry": queued.food_entry_id})
+        queued.food_entry_id = None
+        queued.state = ItemState.PENDING
 
     _apply_correction(queued, message.text)
     if queued.alias is None:
@@ -451,14 +490,16 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         await _offer_foods(message, queued, queue)
         return
     try:
-        text = await _submit(queued, record=True)
+        text = await _submit(queued, record=True, replaces=superseded)
         queued.state = ItemState.SUBMITTED
     except (fatsecret.FatSecretError, match.NoGramServingError, ValueError) as exc:
         await message.reply_text(f"Couldn't submit: {exc}")
         return
 
     store.save_queue(queue)
-    await message.reply_text(text)
+    sent = await message.reply_text(text)
+    queued.message_id = sent.message_id
+    store.save_queue(queue)
 
 
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -496,7 +537,7 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     # Telegram exposes the message as possibly-inaccessible (too old to act on),
     # so narrow it once here rather than at each use.
     origin = query.message if isinstance(query.message, Message) else None
-    action, _, item_id = query.data.partition(":")
+    action, item_id, *extra = query.data.split(":")
 
     queue = store.load_queue()
     queued = next((i for i in queue if i.id == item_id), None)
@@ -505,11 +546,7 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     if action == "pick":
-        item_id, _, food_id = item_id.partition(":")
-        queued = next((i for i in queue if i.id == item_id), None)
-        if queued is None:
-            await query.edit_message_text("That item is gone.")
-            return
+        food_id = extra[0]
         try:
             food = await fatsecret.get_food(int(food_id))
             serving, _units = match.pick_serving(food, queued.item.weight_g)

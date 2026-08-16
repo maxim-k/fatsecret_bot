@@ -126,10 +126,16 @@ async def test_recognize_uses_env_model_override(
     assert fake_client.messages.last_kwargs["model"] == "claude-sonnet-5"
 
 
-def test_model_defaults_to_sonnet(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fast_model_is_the_default_and_sonnet_is_the_escalation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    # Haiku 4.5 misread this user's scale three times out of three.
-    assert vision._DEFAULT_MODEL == "claude-sonnet-5"
+    # Haiku is 2-4 s a photo against Sonnet's 6-12 s, so it runs first and the
+    # stronger model is spent only on a reading the bot already doubts.
+    assert vision._DEFAULT_MODEL == "claude-haiku-4-5"
+    assert vision.escalation_model() == "claude-sonnet-5"
+    monkeypatch.setenv("ANTHROPIC_ESCALATION_MODEL", "claude-opus-5")
+    assert vision.escalation_model() == "claude-opus-5"
 
 
 def _prompt_text(fake_client: _FakeClient) -> str:
@@ -149,3 +155,12 @@ async def test_no_hint_leaves_the_prompt_alone(monkeypatch: pytest.MonkeyPatch) 
     fake_client = _install_fake_client(monkeypatch, _FakeResponse(parsed_output=_one_item()))
     await vision.recognize(b"x", "image/jpeg", ["Egg"])
     assert "First read" not in _prompt_text(fake_client)
+
+
+async def test_model_parameter_overrides_the_env_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+    fake_client = _install_fake_client(monkeypatch, _FakeResponse(parsed_output=_one_item()))
+    await vision.recognize(b"x", "image/jpeg", [], model="claude-sonnet-5")
+    assert fake_client.messages.last_kwargs["model"] == "claude-sonnet-5"

@@ -117,6 +117,9 @@ class QueuedItem(BaseModel):
     # Telegram id of the message describing this item, so a reply to it can be
     # traced back here without printing a queue id at the user.
     message_id: int | None = None
+    # The FatSecret entry this item became, needed to delete and replace it when
+    # a logged weight turns out to be wrong.
+    food_entry_id: int | None = None
 
 
 class DiaryEntry(BaseModel):

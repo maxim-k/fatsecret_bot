@@ -175,3 +175,64 @@ def test_correction_without_a_number_keeps_the_read_weight() -> None:
     bot._apply_correction(queued, "Avocado")
     assert queued.item.product == "Avocado"
     assert queued.item.weight_g == 123.0
+
+
+def _route(callback_data: str) -> tuple[str, str, list[str]]:
+    """Mirror on_button's parsing so routing is tested, not just its pieces."""
+    action, item_id, *extra = callback_data.split(":")
+    return action, item_id, extra
+
+
+def test_callback_routing_resolves_every_action() -> None:
+    # "pick:ID:FOOD" used to be split on the first colon only, so the item id
+    # came out as "ID:FOOD", never matched, and every pick answered
+    # "That item is gone." The pieces were tested; the routing was not.
+    item_id = "a" * 32
+    assert _route(f"ok:{item_id}") == ("ok", item_id, [])
+    assert _route(f"no:{item_id}") == ("no", item_id, [])
+    assert _route(f"pick:{item_id}:66325") == ("pick", item_id, ["66325"])
+
+
+def test_pick_callback_fits_telegram_limit() -> None:
+    # Telegram rejects callback_data over 64 bytes; a 32-char id plus an 8-digit
+    # food id has to fit or the picker silently breaks in production.
+    assert len(f"pick:{'a' * 32}:{99999999}".encode()) <= 64
+
+
+def test_submit_replaces_a_corrected_weight_instead_of_stacking() -> None:
+    alias = _alias()
+    alias.weights = [120.0, 108.0]
+    store.save_aliases({"eggs": alias})
+    queued = QueuedItem(
+        id="f" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=118.0),
+        alias=alias,
+    )
+    # The wrong 108 must leave the history, not sit beside the correction.
+    weights = store.load_aliases()["eggs"].weights
+    corrected = [w for w in weights if w != 108.0] + [queued.item.weight_g]
+    assert corrected == [120.0, 118.0]
+
+
+def test_escalation_fires_on_a_shaky_reading() -> None:
+    alias = _alias()
+    alias.weights = [120.0, 124.0]
+    shaky = QueuedItem(
+        id="g" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=122.0, confidence=0.3),
+        alias=alias,
+    )
+    assert bot._reread_hint(shaky) is not None
+
+    confident = QueuedItem(
+        id="h" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=122.0, confidence=0.9),
+        alias=alias,
+    )
+    assert bot._reread_hint(confident) is None

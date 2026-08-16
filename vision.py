@@ -22,10 +22,21 @@ from anthropic.types import MessageParam
 
 from models import Recognition, RecognizedItem
 
-# Haiku 4.5 read this user's scale as 170, 170 and 110 for a display showing
-# 117, and no amount of prompt work moved it. Changed on measurement, not taste;
-# data/photos/ keeps the corpus to re-measure against.
-_DEFAULT_MODEL: Final = "claude-sonnet-5"
+# Haiku reads a photo in 2-4 s against Sonnet's 6-12 s, but misread this user's
+# egg display three times out of three. So Haiku runs first and Sonnet is spent
+# only on a reading the bot already doubts — see bot._reread. Both measured from
+# log.jsonl; data/photos/ keeps the corpus to re-measure against.
+_DEFAULT_MODEL: Final = "claude-haiku-4-5"
+_ESCALATION_MODEL: Final = "claude-sonnet-5"
+
+
+def escalation_model() -> str:
+    """Return the slower, more accurate model used for a second look.
+
+    :returns: Model id to re-read a doubtful photo with.
+    """
+    return os.environ.get("ANTHROPIC_ESCALATION_MODEL", _ESCALATION_MODEL)
+
 
 # Matches anthropic.types.base64_image_source_param.Base64ImageSourceParam's
 # media_type field. Kept as a separate alias (rather than importing the SDK's
@@ -147,6 +158,7 @@ async def recognize(
     media_type: str,
     recent_foods: list[str],
     hint: str | None = None,
+    model: str | None = None,
 ) -> Recognition:
     """Turn one scale photo into structured, weight-verified food items.
 
@@ -164,6 +176,8 @@ async def recognize(
     :param hint: Extra instruction for a second look at the same photo, telling
         the model what the first pass returned and why it looks wrong. Only ever
         set on a retry.
+    :param model: Override the model for this call, used to escalate a doubtful
+        reading to a stronger one.
     :returns: The items recognized on the scale, each with its own weight
         reading and confidence.
     :raises RecognitionError: If the model returned no parseable text
@@ -205,7 +219,7 @@ async def recognize(
 
     try:
         response = await client.messages.parse(
-            model=os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL),
+            model=model or os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL),
             max_tokens=2048,
             system=_SYSTEM_PROMPT,
             messages=messages,
