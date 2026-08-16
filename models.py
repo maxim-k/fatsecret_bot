@@ -26,8 +26,6 @@ def to_epoch_days(day: date) -> int:
     return (day - EPOCH).days
 
 
-
-
 class ItemState(StrEnum):
     """Lifecycle of a single recognised food item."""
 

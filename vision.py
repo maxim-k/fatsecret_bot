@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Final, Literal, cast
 
 import pydantic
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-from models import Recognition
+from models import Recognition, RecognizedItem
 
 # Deliberately the cheap model — see .env.example. The user upgrades to
 # claude-sonnet-5 (then claude-opus-5) only if raw_digits proves unreliable on
@@ -55,7 +56,22 @@ count:
   not what seems plausible.
 - weight_g: the same reading, parsed to grams as a number. If the display \
   shows a unit other than grams (oz, lb, kg), convert it to grams here; \
-  raw_digits still records what was literally displayed, before conversion.
+  raw_digits still records what was literally displayed, before conversion. \
+  Unless you are converting units, weight_g MUST be exactly the number in \
+  raw_digits — do not add, drop, or reorder digits, and never invent a \
+  decimal point that raw_digits does not show.
+
+Status indicators are not digits:
+Kitchen scales print small status marks in the same LCD area as the number: \
+a zero or tare mark, a stability/"hold" mark, unit labels (g, oz, lb), a \
+battery symbol, a net flag. Several of these are round or oval and look \
+almost exactly like the digit 0, and reading one as a digit turns 117 into \
+170 or 1170. Count only the large seven-segment characters that make up the \
+weight itself. A mark that is smaller than the digits, offset above or \
+below the digit row, sitting next to a unit label, or separated from the \
+number by a gap is an indicator, not a digit. If you cannot tell whether a \
+round mark is a trailing zero or an indicator, treat it as an indicator and \
+lower confidence to reflect the doubt.
 
 Confidence — calibrate it, don't default it:
 Report confidence (0 to 1) for how sure you are that weight_g is correct. \
@@ -196,4 +212,26 @@ async def recognize(
         raise RecognitionError(
             f"model returned no parseable text content (stop_reason={response.stop_reason!r})"
         )
+    for item in response.parsed_output.items:
+        if not _digits_agree(item):
+            item.confidence = 0.0
     return response.parsed_output
+
+
+def _digits_agree(item: RecognizedItem) -> bool:
+    """Check the parsed weight against the digits the model says it saw.
+
+    A reading it transcribed one way and parsed another is not a reading, it
+    is a guess — and a guess with a normal confidence auto-submits. Observed
+    live: ``raw_digits="170"`` alongside ``weight_g=170.1``.
+
+    :param item: One recognised item straight from the model.
+    :returns: ``True`` if the two agree, or if a unit conversion explains the
+        difference.
+    """
+    if re.search(r"oz|lb|kg", item.raw_digits, re.IGNORECASE):
+        return True  # converting to grams legitimately changes the number
+    number = re.search(r"\d+(?:[.,]\d+)?", item.raw_digits)
+    if number is None:
+        return False
+    return abs(float(number.group().replace(",", ".")) - item.weight_g) < 0.05

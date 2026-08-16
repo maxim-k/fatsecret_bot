@@ -186,11 +186,16 @@ async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, A
     """
     # KeyError already names the missing variable, so no bespoke check.
     env = os.environ
-    all_params = {**params, **_oauth_params(env["FATSECRET_CONSUMER_KEY"],
-                                            env["FATSECRET_ACCESS_TOKEN"])}
+    all_params = {
+        **params,
+        **_oauth_params(env["FATSECRET_CONSUMER_KEY"], env["FATSECRET_ACCESS_TOKEN"]),
+    }
     all_params["oauth_signature"] = _sign(
-        method, url, all_params,
-        env["FATSECRET_CONSUMER_SECRET"], env["FATSECRET_ACCESS_SECRET"],
+        method,
+        url,
+        all_params,
+        env["FATSECRET_CONSUMER_SECRET"],
+        env["FATSECRET_ACCESS_SECRET"],
     )
     async with httpx.AsyncClient() as client:
         if method in ("GET", "DELETE"):
