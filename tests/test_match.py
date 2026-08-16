@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 
 import pytest
 
-from match import NoGramServingError, lookup, normalize, pick_serving, units_for
+from match import (
+    NoGramServingError,
+    grams_per_unit,
+    lookup,
+    meal_for,
+    normalize,
+    pick_serving,
+    units_for,
+)
 from models import Alias, Food, Serving
 
 # --- normalize -----------------------------------------------------------
@@ -108,7 +116,7 @@ def test_pick_serving_prefers_gram_serving() -> None:
     )
     serving, units = pick_serving(food, 250.0)
     assert serving.serving_id == 2
-    assert units == 2.5
+    assert units == 250.0
 
 
 def test_pick_serving_scales_non_100g_serving() -> None:
@@ -165,7 +173,7 @@ def test_pick_serving_skips_non_positive_metric_amount() -> None:
     )
     serving, units = pick_serving(food, 100.0)
     assert serving.serving_id == 2
-    assert units == 1.0
+    assert units == 100.0
 
 
 def test_pick_serving_error_message_names_food() -> None:
@@ -184,7 +192,7 @@ def test_pick_serving_grams_unit_case_insensitive() -> None:
     )
     serving, units = pick_serving(food, 200.0)
     assert serving.serving_id == 1
-    assert units == 2.0
+    assert units == 200.0
 
 
 # --- alias round trip, as end-to-end sanity ------------------------------
@@ -214,7 +222,7 @@ def test_pick_serving_prefers_plain_100g_over_natural_units() -> None:
     )
     serving, units = pick_serving(food, 123.0)
     assert serving.serving_id == 51772
-    assert units == 1.23
+    assert units == 123.0
 
 
 def test_pick_serving_falls_back_to_any_gram_serving() -> None:
@@ -226,3 +234,36 @@ def test_pick_serving_falls_back_to_any_gram_serving() -> None:
     serving, units = pick_serving(food, 80.0)
     assert serving.serving_id == 9
     assert units == 2.0
+
+
+def test_grams_per_unit_metric_serving_is_one_gram() -> None:
+    # Live-verified: 2.89 units of Mango's "100 g" serving logged 2.89 g, not 289 g.
+    metric = Serving(serving_id=54116, description="100 g", metric_amount=100.0, metric_unit="g")
+    assert grams_per_unit(metric) == 1.0
+    natural = Serving(serving_id=1, description="1 slice", metric_amount=39.0, metric_unit="g")
+    assert grams_per_unit(natural) == 39.0
+
+
+def test_pick_serving_metric_units_equal_grams() -> None:
+    food = Food(
+        food_id=5436,
+        name="Mango",
+        servings=[
+            Serving(serving_id=20463, description="1 mango", metric_amount=207.0, metric_unit="g"),
+            Serving(serving_id=54116, description="100 g", metric_amount=100.0, metric_unit="g"),
+        ],
+    )
+    serving, units = pick_serving(food, 289.0)
+    assert serving.serving_id == 54116
+    assert units == 289.0
+
+
+def test_meal_for_time_of_day() -> None:
+    assert meal_for(time(6, 0)) == "breakfast"
+    assert meal_for(time(11, 59)) == "breakfast"
+    assert meal_for(time(12, 0)) == "lunch"
+    assert meal_for(time(17, 59)) == "lunch"
+    assert meal_for(time(18, 0)) == "dinner"
+    assert meal_for(time(23, 59)) == "dinner"
+    assert meal_for(time(0, 0)) == "other"
+    assert meal_for(time(5, 59)) == "other"

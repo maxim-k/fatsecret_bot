@@ -8,6 +8,7 @@ this is the module most worth unit-testing hard.
 from __future__ import annotations
 
 import re
+from datetime import time
 
 from models import Alias, Food, Serving
 
@@ -23,6 +24,26 @@ _GRAMS_UNIT = "g"
 # FatSecret exposes a plain "100 g" serving for most generic foods alongside
 # natural-unit ones ("1 large"). Preferring it keeps diary entries readable.
 _METRIC_SERVING_GRAMS = 100.0
+
+# A metric serving's description is just the amount and unit, e.g. "100 g".
+_METRIC_DESCRIPTION_RE = re.compile(r"^\s*\d+(?:\.\d+)?\s*g\s*$", re.IGNORECASE)
+
+
+def grams_per_unit(serving: Serving) -> float:
+    """How many grams one ``number_of_units`` step represents.
+
+    FatSecret is not consistent here, and getting it wrong scales an entry by
+    a factor of 100. For a natural-unit serving ("1 slice", 39 g) one unit is
+    one slice, so units are multiples. For a plain metric serving ("100 g")
+    one unit is a single **gram** — logging 2.89 units of the "100 g" mango
+    serving records 2.89 g, not 289 g. Verified against the live API.
+
+    :param serving: The serving an entry will be logged against.
+    :returns: Grams represented by one unit.
+    """
+    if _METRIC_DESCRIPTION_RE.match(serving.description):
+        return 1.0
+    return serving.metric_amount or 0.0
 
 
 class NoGramServingError(Exception):
@@ -111,4 +132,22 @@ def pick_serving(food: Food, grams: float) -> tuple[Serving, float]:
         (serving for serving in usable if serving.metric_amount == _METRIC_SERVING_GRAMS),
         usable[0],
     )
-    return chosen, units_for(chosen.metric_amount or 0, grams)
+    return chosen, units_for(grams_per_unit(chosen), grams)
+
+
+def meal_for(when: time) -> str:
+    """Map a local time of day onto a FatSecret meal.
+
+    FatSecret only accepts breakfast, lunch, dinner and other, so the small
+    hours land in "other", which its apps show as Snack.
+
+    :param when: Local time the photo was taken.
+    :returns: One of ``breakfast``, ``lunch``, ``dinner``, ``other``.
+    """
+    if 6 <= when.hour < 12:
+        return "breakfast"
+    if 12 <= when.hour < 18:
+        return "lunch"
+    if 18 <= when.hour < 24:
+        return "dinner"
+    return "other"

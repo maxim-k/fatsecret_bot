@@ -83,6 +83,7 @@ async def _submit(queued: QueuedItem) -> str:
         serving_id=alias.serving_id,
         units=units,
         day=queued.day,
+        meal=queued.meal,
     )
     store.append_log(
         "submitted",
@@ -121,7 +122,7 @@ async def _teach(queued: QueuedItem) -> Alias:
             food_id=food.food_id,
             food_name=food.name,
             serving_id=serving.serving_id,
-            serving_grams=serving.metric_amount or 0,
+            serving_grams=match.grams_per_unit(serving),
         )
         aliases = store.load_aliases()
         aliases[match.normalize(queued.item.product)] = alias
@@ -132,18 +133,20 @@ async def _teach(queued: QueuedItem) -> Alias:
     )
 
 
-def _queue_item(item: RecognizedItem, photo_sha256: str, day: date) -> QueuedItem:
+def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -> QueuedItem:
     """Wrap a recognised item for storage.
 
     :param item: Recognised food and weight.
     :param photo_sha256: Digest of the source photo, used for deduplication.
     :param day: Diary day the item belongs to.
+    :param meal: FatSecret meal section, derived from the local time.
     :returns: A pending queue item with a fresh id.
     """
     return QueuedItem(
         id=uuid.uuid4().hex,
         photo_sha256=photo_sha256,
         day=day,
+        meal=meal,
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
     )
@@ -192,12 +195,14 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 
     # Telegram stamps message.date in UTC; an evening photo would otherwise
     # be filed against tomorrow's diary.
-    day = message.date.astimezone().date()
+    local = message.date.astimezone()
+    day = local.date()
+    meal = match.meal_for(local.time())
     queue = store.load_queue()
     lines: list[str] = []
 
     for item in recognition.items:
-        queued = _queue_item(item, digest, day)
+        queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
 
         if queued.alias is not None and item.confidence >= AUTO_SUBMIT_CONFIDENCE:
