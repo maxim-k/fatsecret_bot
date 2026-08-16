@@ -46,6 +46,13 @@ _DIARY_URL = "https://platform.fatsecret.com/rest/food-entries/v1"
 
 _OAUTH_SIGNATURE_METHOD = "HMAC-SHA1"
 
+# FatSecret throttles bursts with error 12 ("performing too many actions"),
+# separate from the 5,000/day cap. A Telegram album arrives as one update per
+# photo, so a bulk upload of known foods would otherwise fire a submit per photo
+# within a second or two and lose most of them. Spacing every call is enough.
+_MIN_CALL_INTERVAL = 1.5
+_last_call = 0.0
+
 
 class FatSecretError(Exception):
     """Raised when FatSecret's API returns an ``error`` object.
@@ -184,6 +191,12 @@ async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, A
     :returns: Decoded JSON response body.
     :raises FatSecretError: If the response body contains an ``error`` object.
     """
+    global _last_call
+    wait = _MIN_CALL_INTERVAL - (time.monotonic() - _last_call)
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _last_call = time.monotonic()
+
     # KeyError already names the missing variable, so no bespoke check.
     env = os.environ
     all_params = {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from datetime import date
 from urllib.parse import parse_qs
 
@@ -30,6 +31,9 @@ def _creds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FATSECRET_CONSUMER_SECRET", "test_secret")
     monkeypatch.setenv("FATSECRET_ACCESS_TOKEN", "test_token")
     monkeypatch.setenv("FATSECRET_ACCESS_SECRET", "test_token_secret")
+    # The live burst guard would otherwise add 1.5 s to every test.
+    monkeypatch.setattr(fatsecret, "_MIN_CALL_INTERVAL", 0.0)
+    monkeypatch.setattr(fatsecret, "_last_call", 0.0)
 
 
 def _body_params(request: httpx.Request) -> dict[str, str]:
@@ -341,3 +345,19 @@ async def test_list_diary_handles_null_collection_on_an_empty_day() -> None:
 async def test_search_foods_handles_null_collection() -> None:
     respx.post(fatsecret._API_URL).mock(return_value=httpx.Response(200, json={"foods": None}))
     assert await fatsecret.search_foods("nothing matches this") == []
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_calls_are_spaced_to_survive_a_bulk_album(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A Telegram album fires one update per photo; back-to-back submits used to
+    # trip FatSecret's error 12 and drop most of the batch.
+    monkeypatch.setattr(fatsecret, "_MIN_CALL_INTERVAL", 0.05)
+    respx.post(fatsecret._API_URL).mock(return_value=httpx.Response(200, json={"foods": None}))
+    start = time.monotonic()
+    for _ in range(3):
+        await search_foods("egg")
+    elapsed = time.monotonic() - start
+    assert elapsed >= 2 * fatsecret._MIN_CALL_INTERVAL
