@@ -38,8 +38,7 @@ Telegram photo ──▶ ingest (ack <1s, never blocks)
 | `match.py` | `match` | Alias normalisation, gram→serving maths | Do any I/O — it is pure by design |
 | `vision.py` | `vision` | Photo → validated `Recognition` | Downsample images |
 | `fatsecret.py` | `diary` | OAuth1 signing, food lookup, diary read/write | Grow a retry or rate-limit framework |
-| `bot.py` | `ingest`/`review` | Telegram handlers, orchestration | Hold logic that belongs in `match` |
-| `main.py` | `ingest` | Entry point, long polling | — |
+| `bot.py` | `ingest`/`review` | Telegram handlers, orchestration, entry point | Hold logic that belongs in `match` |
 
 ### `models.py` is a fixed contract
 
