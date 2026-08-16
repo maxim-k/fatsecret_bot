@@ -23,11 +23,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen
-CMD ["uv", "run", "python", "main.py"]
+CMD ["uv", "run", "python", "bot.py"]
 
 FROM deps AS prod
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 # Long polling only — the bot opens outbound connections and listens on no port.
-CMD ["uv", "run", "--no-dev", "python", "main.py"]
+CMD ["uv", "run", "--no-dev", "python", "bot.py"]

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import store
-from models import Alias, ItemState, Meal, QueuedItem, RecognizedItem
+from models import Alias, ItemState, QueuedItem, RecognizedItem
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +28,7 @@ def _make_queued_item(
         id="q1",
         photo_sha256=photo_sha256,
         day=date(2026, 8, 13),
-        meal=Meal.LUNCH,
+        meal="lunch",
         item=RecognizedItem(
             product="chicken breast", weight_g=150.0, raw_digits="150", confidence=0.9
         ),

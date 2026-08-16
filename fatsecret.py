@@ -23,14 +23,13 @@ import sys
 import time
 import uuid
 from base64 import b64encode
-from dataclasses import dataclass
 from datetime import date
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlencode
 
 import httpx
 
-from models import DiaryEntry, Food, Meal, Serving, from_epoch_days, to_epoch_days
+from models import DiaryEntry, Food, Serving, to_epoch_days
 
 _AUTH_BASE = "https://authentication.fatsecret.com/oauth"
 _REQUEST_TOKEN_URL = f"{_AUTH_BASE}/request_token"
@@ -45,7 +44,6 @@ _API_URL = "https://platform.fatsecret.com/rest/server.api"
 # diary entry.
 _DIARY_URL = "https://platform.fatsecret.com/rest/food-entries/v1"
 
-_OAUTH_VERSION = "1.0"
 _OAUTH_SIGNATURE_METHOD = "HMAC-SHA1"
 
 
@@ -67,40 +65,6 @@ class FatSecretError(Exception):
         self.code = code
         self.message = message
         super().__init__(f"FatSecret API error {code}: {message}")
-
-
-@dataclass(frozen=True)
-class _Credentials:
-    """OAuth1 consumer and access token pair read from the environment."""
-
-    consumer_key: str
-    consumer_secret: str
-    access_token: str
-    access_secret: str
-
-
-def _load_credentials() -> _Credentials:
-    """Read the four required OAuth1 values from the environment.
-
-    :returns: The consumer and access credentials.
-    :raises RuntimeError: If any required environment variable is unset.
-    """
-    names = (
-        "FATSECRET_CONSUMER_KEY",
-        "FATSECRET_CONSUMER_SECRET",
-        "FATSECRET_ACCESS_TOKEN",
-        "FATSECRET_ACCESS_SECRET",
-    )
-    values = {name: os.environ.get(name) for name in names}
-    missing = [name for name, value in values.items() if not value]
-    if missing:
-        raise RuntimeError(f"Missing required environment variable(s): {', '.join(missing)}")
-    return _Credentials(
-        consumer_key=values["FATSECRET_CONSUMER_KEY"],  # type: ignore[arg-type]
-        consumer_secret=values["FATSECRET_CONSUMER_SECRET"],  # type: ignore[arg-type]
-        access_token=values["FATSECRET_ACCESS_TOKEN"],  # type: ignore[arg-type]
-        access_secret=values["FATSECRET_ACCESS_SECRET"],  # type: ignore[arg-type]
-    )
 
 
 def _percent_encode(value: str) -> str:
@@ -172,7 +136,7 @@ def _oauth_params(consumer_key: str, token: str | None) -> dict[str, str]:
         "oauth_nonce": uuid.uuid4().hex,
         "oauth_signature_method": _OAUTH_SIGNATURE_METHOD,
         "oauth_timestamp": str(int(time.time())),
-        "oauth_version": _OAUTH_VERSION,
+        "oauth_version": "1.0",
     }
     if token is not None:
         params["oauth_token"] = token
@@ -202,17 +166,13 @@ def _as_list(value: object) -> list[Any]:
 def _num(value: object) -> float:
     """Coerce a FatSecret numeric field to ``float``.
 
-    FatSecret's JSON encodes numbers as strings (e.g. ``"31.50"``), a
-    consequence of the same XML-to-JSON translation that produces the
-    object-vs-list quirk above. Accept plain numbers too so this is safe to
-    call regardless of which shape a given field happens to arrive in.
+    FatSecret's JSON encodes numbers as strings ("31.50"), a consequence of
+    the same XML-to-JSON translation behind the object-vs-list quirk.
 
     :param value: The raw field value, typically a ``str``.
     :returns: The parsed float.
     """
-    if isinstance(value, int | float):
-        return float(value)
-    return float(str(value))
+    return float(value)  # type: ignore[arg-type]
 
 
 async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, Any]:
@@ -224,11 +184,13 @@ async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, A
     :returns: Decoded JSON response body.
     :raises FatSecretError: If the response body contains an ``error`` object.
     """
-    creds = _load_credentials()
-    oauth_params = _oauth_params(creds.consumer_key, creds.access_token)
-    all_params = {**params, **oauth_params}
+    # KeyError already names the missing variable, so no bespoke check.
+    env = os.environ
+    all_params = {**params, **_oauth_params(env["FATSECRET_CONSUMER_KEY"],
+                                            env["FATSECRET_ACCESS_TOKEN"])}
     all_params["oauth_signature"] = _sign(
-        method, url, all_params, creds.consumer_secret, creds.access_secret
+        method, url, all_params,
+        env["FATSECRET_CONSUMER_SECRET"], env["FATSECRET_ACCESS_SECRET"],
     )
     async with httpx.AsyncClient() as client:
         if method in ("GET", "DELETE"):
@@ -311,25 +273,26 @@ async def list_diary(day: date) -> list[DiaryEntry]:
     epoch_day = to_epoch_days(day)
     body = await _request("GET", _DIARY_URL, {"date": str(epoch_day), "format": "json"})
     raw_entries = _as_list((body.get("food_entries") or {}).get("food_entry"))
-    return [_parse_diary_entry(raw_entry) for raw_entry in raw_entries]
+    return [_parse_diary_entry(raw_entry, day) for raw_entry in raw_entries]
 
 
-def _parse_diary_entry(raw: dict[str, Any]) -> DiaryEntry:
+def _parse_diary_entry(raw: dict[str, Any], day: date) -> DiaryEntry:
     """Parse one raw diary entry object into a :class:`models.DiaryEntry`.
 
     :param raw: One element of the ``food_entries.food_entry`` field.
+    :param day: The day that was requested; the entries are all from it.
     :returns: The parsed entry.
     """
     return DiaryEntry(
         food_entry_id=int(raw["food_entry_id"]),
         food_id=int(raw["food_id"]),
         name=raw["food_entry_name"],
-        day=from_epoch_days(int(raw["date_int"])),
+        day=day,
     )
 
 
 async def create_entry(
-    food_id: int, name: str, serving_id: int, units: float, meal: Meal, day: date
+    food_id: int, name: str, serving_id: int, units: float, day: date, meal: str = "other"
 ) -> DiaryEntry:
     """Log a food entry to the diary.
 
@@ -337,8 +300,8 @@ async def create_entry(
     :param name: Display name to store against the entry.
     :param serving_id: The serving option being logged.
     :param units: Number of servings, e.g. ``1.5``.
-    :param meal: Diary section to log under.
     :param day: Calendar date to log against.
+    :param meal: Diary section; FatSecret requires one and the bot never splits meals.
     :returns: The newly created diary entry.
     :raises FatSecretError: If FatSecret returns an error response.
     """
@@ -351,7 +314,7 @@ async def create_entry(
             "food_entry_name": name,
             "serving_id": str(serving_id),
             "number_of_units": str(units),
-            "meal": meal.value,
+            "meal": meal,
             "date": str(epoch_day),
             "format": "json",
         },

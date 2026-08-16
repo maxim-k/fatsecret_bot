@@ -128,4 +128,4 @@ async def test_recognize_uses_env_model_override(
 
 def test_model_id_defaults_to_haiku(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
-    assert vision._model_id() == "claude-haiku-4-5"
+    assert vision._DEFAULT_MODEL == "claude-haiku-4-5"

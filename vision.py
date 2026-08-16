@@ -26,8 +26,6 @@ from models import Recognition
 # real photos, so this default must never silently drift to a pricier model.
 _DEFAULT_MODEL: Final = "claude-haiku-4-5"
 
-_MAX_TOKENS: Final = 2048
-
 # Matches anthropic.types.base64_image_source_param.Base64ImageSourceParam's
 # media_type field. Kept as a separate alias (rather than importing the SDK's
 # internal type) so the public recognize() signature can stay a plain `str` —
@@ -92,11 +90,6 @@ product; do not paraphrase, reformat, or change its capitalization. Only \
 propose a new name when none of the candidates match.
 """
 
-_NO_RECENT_FOODS_NOTE: Final = (
-    "The user has no previously logged foods yet. Propose a clear, concise "
-    "product name for each item."
-)
-
 
 class RecognitionError(Exception):
     """Raised when the model's response cannot be trusted as a Recognition.
@@ -106,17 +99,6 @@ class RecognitionError(Exception):
     either way, the caller gets a clear failure instead of a corrupted or
     partially-populated Recognition.
     """
-
-
-def _model_id() -> str:
-    """Resolve the Claude model to call, honouring the env override.
-
-    Read at call time rather than cached at import time, so a changed
-    ``ANTHROPIC_MODEL`` takes effect without restarting the process.
-
-    :returns: The model ID to pass to the Messages API.
-    """
-    return os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL)
 
 
 _client: AsyncAnthropic | None = None
@@ -144,30 +126,6 @@ def _get_client() -> AsyncAnthropic:
     return _client
 
 
-def _build_user_prompt(recent_foods: list[str]) -> str:
-    """Build the per-request text instruction that accompanies the photo.
-
-    :param recent_foods: Product names the user has logged before, in no
-        particular order.
-    :returns: Text instructing the model what to do with this specific
-        photo, including the reuse-candidate list when there is one.
-    """
-    if not recent_foods:
-        recent_section = _NO_RECENT_FOODS_NOTE
-    else:
-        candidates = "\n".join(f"- {food}" for food in recent_foods)
-        recent_section = (
-            "The user has previously logged these exact product names:\n"
-            f"{candidates}\n\n"
-            "Reuse one of them verbatim for `product` whenever it matches a "
-            "food on the scale."
-        )
-    return (
-        "Identify every distinct food item on the scale in this photo and "
-        "read the weight from the scale's display.\n\n" + recent_section
-    )
-
-
 async def recognize(
     image_bytes: bytes,
     media_type: str,
@@ -192,6 +150,18 @@ async def recognize(
         content, or its content failed schema validation.
     """
     client = _get_client()
+    candidates = "\n".join(f"- {food}" for food in recent_foods)
+    user_prompt = (
+        "Identify every distinct food item on the scale in this photo and "
+        "read the weight from the scale's display.\n\n"
+        + (
+            f"The user has previously logged these exact product names:\n{candidates}\n\n"
+            "Reuse one of them verbatim for `product` whenever it matches a food on the scale."
+            if recent_foods
+            else "The user has no previously logged foods yet. Propose a clear, "
+            "concise product name for each item."
+        )
+    )
     image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
 
     messages: list[MessageParam] = [
@@ -206,15 +176,15 @@ async def recognize(
                         "data": image_b64,
                     },
                 },
-                {"type": "text", "text": _build_user_prompt(recent_foods)},
+                {"type": "text", "text": user_prompt},
             ],
         }
     ]
 
     try:
         response = await client.messages.parse(
-            model=_model_id(),
-            max_tokens=_MAX_TOKENS,
+            model=os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL),
+            max_tokens=2048,
             system=_SYSTEM_PROMPT,
             messages=messages,
             output_format=Recognition,

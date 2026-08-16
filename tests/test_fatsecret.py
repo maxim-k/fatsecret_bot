@@ -19,7 +19,7 @@ from fatsecret import (
     search_foods,
     signature_base_string,
 )
-from models import Meal, from_epoch_days, to_epoch_days
+from models import to_epoch_days
 
 # --- env fixture -------------------------------------------------------
 
@@ -276,7 +276,7 @@ async def test_create_entry_sends_correct_epoch_day_and_fields() -> None:
         name="Egg",
         serving_id=1,
         units=1.5,
-        meal=Meal.BREAKFAST,
+        meal="breakfast",
         day=day,
     )
     sent = _body_params(route.calls.last.request)
@@ -295,7 +295,7 @@ async def test_create_entry_unwraps_value_wrapped_id() -> None:
         return_value=httpx.Response(200, json={"food_entry_id": {"value": "777"}})
     )
     entry = await create_entry(
-        food_id=1, name="Egg", serving_id=1, units=1.0, meal=Meal.OTHER, day=date(2026, 8, 13)
+        food_id=1, name="Egg", serving_id=1, units=1.0, day=date(2026, 8, 13)
     )
     assert entry.food_entry_id == 777
 
@@ -317,16 +317,12 @@ async def test_delete_entry_sends_entry_id_and_returns_none() -> None:
 
 async def test_missing_credentials_raise_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FATSECRET_CONSUMER_KEY", raising=False)
-    with pytest.raises(RuntimeError, match="FATSECRET_CONSUMER_KEY"):
+    # KeyError from os.environ already names the missing variable.
+    with pytest.raises(KeyError, match="FATSECRET_CONSUMER_KEY"):
         await search_foods("egg")
 
 
 # --- sanity: epoch day round trip used throughout ---------------------------
-
-
-def test_epoch_day_round_trip() -> None:
-    day = date(2026, 8, 13)
-    assert from_epoch_days(to_epoch_days(day)) == day
 
 
 @pytest.mark.asyncio

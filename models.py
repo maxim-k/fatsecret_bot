@@ -26,22 +26,6 @@ def to_epoch_days(day: date) -> int:
     return (day - EPOCH).days
 
 
-def from_epoch_days(days: int) -> date:
-    """Convert FatSecret's day number back to a calendar date.
-
-    :param days: Whole days elapsed since 1970-01-01.
-    :returns: The corresponding calendar date.
-    """
-    return EPOCH.fromordinal(EPOCH.toordinal() + days)
-
-
-class Meal(StrEnum):
-    """Diary sections FatSecret accepts. The API rejects any other value."""
-
-    BREAKFAST = "breakfast"
-    LUNCH = "lunch"
-    DINNER = "dinner"
-    OTHER = "other"
 
 
 class ItemState(StrEnum):
@@ -120,7 +104,7 @@ class QueuedItem(BaseModel):
     id: str
     photo_sha256: str
     day: date
-    meal: Meal = Meal.OTHER
+    meal: str = "other"
     item: RecognizedItem
     alias: Alias | None = None
     state: ItemState = ItemState.PENDING

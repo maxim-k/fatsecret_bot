@@ -58,10 +58,10 @@ Fill it in. `.env` is gitignored — keep it that way.
 
 ```bash
 uv sync
-uv run --env-file .env python main.py
+uv run --env-file .env python bot.py
 ```
 
-`--env-file` is what loads `.env`; nothing reads it implicitly, so plain `uv run python main.py` starts with no configuration and exits.
+`--env-file` is what loads `.env`; nothing reads it implicitly, so plain `uv run python bot.py` starts with no configuration and exits.
 
 Requires Python 3.14; `uv python install 3.14` if you don't have it.
 
@@ -120,13 +120,13 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 | `vision.py` | Photo → structured items, via Claude |
 | `fatsecret.py` | OAuth1 client, food lookup, diary read/write, `authorize` CLI |
 | `bot.py` | Telegram handlers and orchestration |
-| `main.py` | Entry point |
+
 
 `SCOPE.md` defines commit conventions. `CLAUDE.md` holds the architectural notes and the gotchas that have already caused bugs.
 
 ## Status and known limits
 
-- **Three of five FatSecret endpoints are inferred, not verified.** Only the diary-write endpoint is confirmed against the real API; food search, food lookup, diary read and delete were written from the documented patterns and need checking on first real use.
-- **The free Basic tier is a US-only dataset.** If your diary is in another language, `foods.search` may not find your foods. The fallback is to build aliases from your existing diary history instead of from search — untested.
+- **The two write endpoints are still unexercised.** `search_foods`, `get_food` and `list_diary` are verified against the real API; `create_entry` and `delete_entry` have never been run.
+- **Meals aren't split.** Everything logs to `other`; FatSecret requires a meal and the bot never picks one.
 - **Whether Physical Life backfills older entries is unknown.** If it only syncs recent ones, the catch-up-on-a-week-of-backlog use case doesn't work and the bot becomes same-day only.
 - The model defaults to `claude-haiku-4-5` on cost grounds. If it misreads scale digits, set `ANTHROPIC_MODEL=claude-sonnet-5` — check the `raw_digits` field on your first batch of real photos before deciding.

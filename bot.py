@@ -29,7 +29,7 @@ import fatsecret
 import match
 import store
 import vision
-from models import Alias, ItemState, Meal, QueuedItem, RecognizedItem
+from models import Alias, ItemState, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +37,6 @@ log = logging.getLogger(__name__)
 # Anything less is queued: the backlog this bot exists to kill comes from friction,
 # but silently logging a misread weight would cost the user's trust entirely.
 AUTO_SUBMIT_CONFIDENCE: Final = 0.8
-
-# How many previously logged names to offer the model as reuse candidates.
-RECENT_FOOD_CANDIDATES: Final = 40
 
 
 def _owner_id() -> int:
@@ -54,15 +51,6 @@ def _owner_id() -> int:
     return int(raw)
 
 
-def _short(item_id: str) -> str:
-    """Shorten a queue id for display in chat.
-
-    :param item_id: Full UUID hex string.
-    :returns: First eight characters, enough to disambiguate a day's items.
-    """
-    return item_id[:8]
-
-
 def _describe(queued: QueuedItem) -> str:
     """Render a queued item as a single chat line.
 
@@ -73,7 +61,7 @@ def _describe(queued: QueuedItem) -> str:
     item = queued.item
     name = queued.alias.food_name if queued.alias else item.product
     return (
-        f"`{_short(queued.id)}` {name} — {item.weight_g:g} g "
+        f"`{queued.id[:8]}` {name} — {item.weight_g:g} g "
         f"(read “{item.raw_digits}”, confidence {item.confidence:.0%})"
     )
 
@@ -94,7 +82,6 @@ async def _submit(queued: QueuedItem) -> str:
         name=alias.food_name,
         serving_id=alias.serving_id,
         units=units,
-        meal=queued.meal,
         day=queued.day,
     )
     store.append_log(
@@ -157,7 +144,6 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date) -> QueuedIte
         id=uuid.uuid4().hex,
         photo_sha256=photo_sha256,
         day=day,
-        meal=Meal.OTHER,
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
     )
@@ -199,7 +185,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     # ("Egg"), while the model would otherwise say "eggs" and miss the lookup.
     recent = [
         alias.food_name for alias in sorted(aliases.values(), key=lambda a: a.hits, reverse=True)
-    ][:RECENT_FOOD_CANDIDATES]
+    ][:40]  # candidate list has to stay promptable
     try:
         recognition = await vision.recognize(image_bytes, media_type, recent)
     except vision.RecognitionError as exc:
@@ -277,7 +263,7 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     if action == "no":
         queued.state = ItemState.DISCARDED
         store.save_queue(queue)
-        await query.edit_message_text(f"Discarded {_short(queued.id)}.")
+        await query.edit_message_text(f"Discarded {queued.id[:8]}.")
         return
 
     try:
@@ -352,6 +338,25 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text(f"Something broke: {context.error}")
 
 
+def main() -> int:
+    """Configure logging and poll until interrupted.
+
+    :returns: Process exit code.
+    """
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    # Telegram's own HTTP chatter buries our logs at INFO and is rarely useful.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        logging.error("TELEGRAM_BOT_TOKEN is not set - see .env.example")
+        return 1
+    build_application(token).run_polling()
+    return 0
+
+
 def build_application(token: str) -> Application:  # type: ignore[type-arg]
     """Assemble the Telegram application with an owner-only filter.
 
@@ -367,3 +372,7 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_error_handler(on_error)
     return app
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
