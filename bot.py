@@ -198,6 +198,10 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     local = message.date.astimezone()
     day = local.date()
     meal = match.meal_for(local.time())
+    # ponytail: load/modify/save is only safe because python-telegram-bot runs
+    # updates one at a time (max_concurrent_updates == 1), and there is an await
+    # on the vision call in between. Raising concurrency loses queue entries when
+    # several photos arrive together — switch to append-only or a lock if so.
     queue = store.load_queue()
     lines: list[str] = []
 
