@@ -146,6 +146,7 @@ async def recognize(
     image_bytes: bytes,
     media_type: str,
     recent_foods: list[str],
+    hint: str | None = None,
 ) -> Recognition:
     """Turn one scale photo into structured, weight-verified food items.
 
@@ -160,6 +161,9 @@ async def recognize(
         to the model as reuse candidates so downstream alias lookup in
         ``match.py`` hits an existing alias instead of creating a near-
         duplicate.
+    :param hint: Extra instruction for a second look at the same photo, telling
+        the model what the first pass returned and why it looks wrong. Only ever
+        set on a retry.
     :returns: The items recognized on the scale, each with its own weight
         reading and confidence.
     :raises RecognitionError: If the model returned no parseable text
@@ -178,6 +182,8 @@ async def recognize(
             "concise product name for each item."
         )
     )
+    if hint:
+        user_prompt = f"{user_prompt}\n\n{hint}"
     image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
 
     messages: list[MessageParam] = [

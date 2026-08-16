@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import uuid
 from datetime import date
 from typing import Final
@@ -139,6 +140,32 @@ async def _teach(queued: QueuedItem) -> Alias:
     )
 
 
+def _reread_hint(queued: QueuedItem) -> str | None:
+    """Build an instruction for a second look, or ``None`` if none would help.
+
+    Only a weight the food's own history contradicts is worth re-reading: a new
+    food has nothing to compare against, and a display the model already called
+    illegible will not become legible on a second pass.
+
+    :param queued: The item the first pass produced.
+    :returns: Text to append to the retry prompt, or ``None``.
+    """
+    if queued.alias is None:
+        return None
+    bounds = match.plausible_range(queued.alias.weights)
+    if bounds is None or bounds[0] <= queued.item.weight_g <= bounds[1]:
+        return None
+    return (
+        f"A previous read of this photo reported {queued.item.weight_g:g} g for "
+        f"{queued.alias.food_name!r}. That food normally weighs between "
+        f"{bounds[0]:.0f} and {bounds[1]:.0f} g, so the earlier reading is very "
+        "likely wrong. The usual cause is a status indicator on the display "
+        "being counted as a digit, most often as a trailing zero. Read only the "
+        "large seven-segment characters and report what they actually show. If "
+        "the display really does read the earlier value, say so and keep it."
+    )
+
+
 def _hold_reason(queued: QueuedItem) -> str | None:
     """Decide whether this item needs a human before it is logged.
 
@@ -177,6 +204,33 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
     )
+
+
+async def _reread(
+    image_bytes: bytes,
+    media_type: str,
+    recent: list[str],
+    hint: str,
+    queued: QueuedItem,
+) -> RecognizedItem | None:
+    """Ask the model to look at the same photo once more.
+
+    :param image_bytes: The original photo, unmodified.
+    :param media_type: Its MIME type.
+    :param recent: The same reuse candidates the first pass got.
+    :param hint: Why the first reading looks wrong.
+    :param queued: The item being rechecked, used to match the retry's answer.
+    :returns: The re-read item, or ``None`` if the retry failed or came back
+        describing something else.
+    """
+    try:
+        second = await vision.recognize(image_bytes, media_type, recent, hint=hint)
+    except vision.RecognitionError:
+        return None  # the first reading still stands and will be held
+    # A multi-item plate can come back in a different order, so match on the name
+    # rather than assuming the retry answers in the same sequence.
+    key = match.normalize(queued.item.product)
+    return next((i for i in second.items if match.normalize(i.product) == key), None)
 
 
 async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -232,20 +286,82 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
 
+        # One re-read, never a loop: a hint that fails to settle the reading is
+        # not going to settle it on the third try either.
+        note = ""
+        hint = _reread_hint(queued)
+        if hint is not None:
+            first = queued.item.weight_g
+            retried = await _reread(image_bytes, media_type, recent, hint, queued)
+            if retried is not None:
+                store.append_log(
+                    "reread",
+                    {"item_id": queued.id, "first": first, "second": retried.weight_g},
+                )
+                queued.item = retried
+                if _hold_reason(queued) is None:
+                    note = f" (re-read; first pass said {first:g} g)"
+                else:
+                    note = f" First pass said {first:g} g."
+
         hold = _hold_reason(queued)
         if hold is None:
             try:
-                lines.append(await _submit(queued))
+                lines.append(await _submit(queued) + note)
                 queued.state = ItemState.SUBMITTED
             except fatsecret.FatSecretError as exc:
                 # The sink failing must not lose the item — keep it reviewable.
                 lines.append(f"{_describe(queued)}\nFatSecret error: {exc}")
         else:
-            lines.append(f"{_describe(queued)}\n{hold}")
+            lines.append(
+                f"{_describe(queued)}\n{hold}{note}\n"
+                "Reply with a number to fix the weight, or a name to fix the food."
+            )
         queue.append(queued)
 
     store.save_queue(queue)
     await message.reply_text("\n\n".join(lines) or "Nothing recognised in that photo.")
+
+
+async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Correct a held item by replying to the message describing it.
+
+    A numeric reply fixes the weight, anything else names the right food. The
+    item is recovered from the short id printed in the quoted message, so no
+    conversation state has to be tracked between messages.
+
+    :param update: Incoming reply.
+    :param _context: Unused handler context.
+    """
+    message = update.effective_message
+    if message is None or message.text is None or message.reply_to_message is None:
+        return
+    quoted = message.reply_to_message.text or ""
+    short_id = re.match(r"\s*`?([0-9a-f]{8})`?", quoted)
+    if short_id is None:
+        return  # a reply to something else entirely
+
+    queue = store.load_queue()
+    queued = next((i for i in queue if i.id.startswith(short_id.group(1))), None)
+    if queued is None:
+        await message.reply_text("That item is gone.")
+        return
+
+    reply = message.text.strip().replace(",", ".")
+    try:
+        if re.fullmatch(r"\d+(?:\.\d+)?", reply):
+            queued.item.weight_g = float(reply)
+        else:
+            queued.item.product = reply
+            queued.alias = await _teach(queued)
+        text = await _submit(queued)
+        queued.state = ItemState.SUBMITTED
+    except (fatsecret.FatSecretError, match.NoGramServingError, ValueError) as exc:
+        await message.reply_text(f"Couldn't submit: {exc}")
+        return
+
+    store.save_queue(queue)
+    await message.reply_text(text)
 
 
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -399,6 +515,8 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     app.add_handler(CommandHandler("pending", on_pending, filters=owner))
     app.add_handler(CommandHandler("today", on_today, filters=owner))
     app.add_handler(CommandHandler("undo", on_undo, filters=owner))
+    # Before the photo handler, and gated on REPLY so ordinary text falls through.
+    app.add_handler(MessageHandler(owner & filters.REPLY & filters.TEXT, on_reply))
     app.add_handler(MessageHandler(owner & (filters.PHOTO | filters.Document.IMAGE), on_photo))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_error_handler(on_error)

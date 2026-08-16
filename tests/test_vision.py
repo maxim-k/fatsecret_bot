@@ -129,3 +129,22 @@ async def test_recognize_uses_env_model_override(
 def test_model_id_defaults_to_haiku(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     assert vision._DEFAULT_MODEL == "claude-haiku-4-5"
+
+
+def _prompt_text(fake_client: _FakeClient) -> str:
+    sent_messages = fake_client.messages.last_kwargs["messages"]
+    return "\n".join(
+        block["text"] for block in sent_messages[0]["content"] if block["type"] == "text"
+    )
+
+
+async def test_hint_reaches_the_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = _install_fake_client(monkeypatch, _FakeResponse(parsed_output=_one_item()))
+    await vision.recognize(b"x", "image/jpeg", ["Egg"], hint="First read 560 g; expect 42-70 g.")
+    assert "First read 560 g; expect 42-70 g." in _prompt_text(fake_client)
+
+
+async def test_no_hint_leaves_the_prompt_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_client = _install_fake_client(monkeypatch, _FakeResponse(parsed_output=_one_item()))
+    await vision.recognize(b"x", "image/jpeg", ["Egg"])
+    assert "First read" not in _prompt_text(fake_client)

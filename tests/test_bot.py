@@ -15,8 +15,12 @@ def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
 
 
-def _item(product: str = "eggs", confidence: float = 0.95) -> RecognizedItem:
-    return RecognizedItem(product=product, weight_g=123.0, raw_digits="123", confidence=confidence)
+def _item(
+    product: str = "eggs", confidence: float = 0.95, weight_g: float = 123.0
+) -> RecognizedItem:
+    return RecognizedItem(
+        product=product, weight_g=weight_g, raw_digits=str(int(weight_g)), confidence=confidence
+    )
 
 
 def _alias() -> Alias:
@@ -82,3 +86,57 @@ def test_concurrent_updates_stays_at_one() -> None:
     from telegram.ext import ApplicationBuilder
 
     assert ApplicationBuilder().token("1:x").build().concurrent_updates == 1
+
+
+def test_reread_hint_only_for_a_weight_outside_the_band() -> None:
+    alias = _alias()
+    alias.weights = [56.0]
+    inband = QueuedItem(
+        id="a" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=56.0),
+        alias=alias,
+    )
+    assert bot._reread_hint(inband) is None
+
+    outlier = QueuedItem(
+        id="b" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=560.0),
+        alias=alias,
+    )
+    hint = bot._reread_hint(outlier)
+    assert hint is not None
+    assert "560" in hint
+    assert "trailing zero" in hint
+
+
+def test_reread_hint_absent_without_alias_or_history() -> None:
+    no_alias = QueuedItem(id="c" * 32, photo_sha256="x", day=date(2026, 8, 15), item=_item())
+    assert bot._reread_hint(no_alias) is None
+
+    no_history = QueuedItem(
+        id="d" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=999.0),
+        alias=_alias(),
+    )
+    assert bot._reread_hint(no_history) is None
+
+
+def test_hold_reason_clears_once_the_weight_is_back_in_band() -> None:
+    alias = _alias()
+    alias.weights = [56.0]
+    q = QueuedItem(
+        id="e" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 15),
+        item=_item(weight_g=560.0),
+        alias=alias,
+    )
+    assert bot._hold_reason(q) is not None
+    q.item.weight_g = 56.0
+    assert bot._hold_reason(q) is None

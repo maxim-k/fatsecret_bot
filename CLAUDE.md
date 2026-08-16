@@ -65,6 +65,10 @@ Daily auth health-checks, scheduled nudges, digest messages, prompt caching, a `
 
 Errors are reported. Anomalies are asked about. The user's own input is not policed.
 
+**One re-read before asking.** When a weight falls outside `match.plausible_range`, `bot._reread_hint` builds an instruction naming the first reading and the expected band, and `vision.recognize(..., hint=...)` looks at the same photo again. Landing back in band logs with a `(re-read; first pass said 560 g)` note; otherwise the item is held showing both readings. **Exactly one retry** — guarded by the fact that `_reread` is called once and never recurses. Both weights go to `log.jsonl` as a `reread` event.
+
+**Corrections are replies, not conversations.** `bot.on_reply` recovers the item from the eight-character id in the quoted message: a numeric reply sets the weight, anything else names the right food and re-teaches the alias. There is deliberately no conversation state machine — `fs_bot` had two `MessageHandler`s in one group and the second never fired.
+
 ## Verification loop
 
 Run all four before claiming anything works:
