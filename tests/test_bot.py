@@ -25,20 +25,20 @@ def _alias() -> Alias:
 
 def test_queue_item_resolves_a_known_alias() -> None:
     store.save_aliases({"eggs": _alias()})
-    queued = bot._queue_item(_item(), "abc", date(2026, 8, 15))
+    queued = bot._queue_item(_item(), "abc", date(2026, 8, 15), "lunch")
     assert queued.alias is not None
     assert queued.alias.food_name == "Eggs"
     assert queued.state == ItemState.PENDING
 
 
 def test_queue_item_leaves_unknown_product_unresolved() -> None:
-    queued = bot._queue_item(_item(product="dragonfruit"), "abc", date(2026, 8, 15))
+    queued = bot._queue_item(_item(product="dragonfruit"), "abc", date(2026, 8, 15), "lunch")
     assert queued.alias is None
 
 
 def test_queue_item_normalises_before_lookup() -> None:
     store.save_aliases({"eggs": _alias()})
-    queued = bot._queue_item(_item(product="  EGGS  "), "abc", date(2026, 8, 15))
+    queued = bot._queue_item(_item(product="  EGGS  "), "abc", date(2026, 8, 15), "lunch")
     assert queued.alias is not None
 
 
