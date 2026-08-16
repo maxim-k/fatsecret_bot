@@ -101,21 +101,6 @@ def test_data_dir_created_if_missing(_data_dir: Path) -> None:
     assert _data_dir.is_dir()
 
 
-def test_is_duplicate_true_for_submitted_item() -> None:
-    store.save_queue([_make_queued_item(photo_sha256="hash1", state=ItemState.SUBMITTED)])
-    assert store.is_duplicate("hash1") is True
-
-
-def test_is_duplicate_false_for_pending_only() -> None:
-    store.save_queue([_make_queued_item(photo_sha256="hash2", state=ItemState.PENDING)])
-    assert store.is_duplicate("hash2") is False
-
-
-def test_is_duplicate_false_when_hash_absent() -> None:
-    store.save_queue([_make_queued_item(photo_sha256="hash3", state=ItemState.SUBMITTED)])
-    assert store.is_duplicate("does-not-exist") is False
-
-
 def test_append_log_writes_one_line_per_call(_data_dir: Path) -> None:
     store.append_log("event_one", {"key": "value"})
     store.append_log("event_two", {"key": 2})

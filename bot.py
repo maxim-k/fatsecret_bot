@@ -137,7 +137,7 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
     """Wrap a recognised item for storage.
 
     :param item: Recognised food and weight.
-    :param photo_sha256: Digest of the source photo, used for deduplication.
+    :param photo_sha256: Digest of the source photo, kept for the audit trail.
     :param day: Diary day the item belongs to.
     :param meal: FatSecret meal section, derived from the local time.
     :returns: A pending queue item with a fresh id.
@@ -174,10 +174,6 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     telegram_file = await message.get_bot().get_file(file_id)
     image_bytes = bytes(await telegram_file.download_as_bytearray())
     digest = hashlib.sha256(image_bytes).hexdigest()
-
-    if store.is_duplicate(digest):
-        await message.reply_text("Already logged this photo — skipping.")
-        return
 
     aliases = store.load_aliases()
     # Most-eaten first: the candidate list is capped, and the model can only

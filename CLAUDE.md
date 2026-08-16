@@ -55,7 +55,9 @@ Modules are written and changed independently. **Do not change `models.py` as a 
 
 ### Deliberately not built — do not "helpfully" add these
 
-Daily auth health-checks, scheduled nudges, digest messages, prompt caching, a `Sink` abstraction, idempotency tables, retry frameworks, a rate limiter, SQLite. Each was considered and cut. Duplicate submission is prevented by a photo SHA-256 check, the fallback for a failed submit is an `except` that prints a paste-able line, and that is sufficient.
+Daily auth health-checks, scheduled nudges, digest messages, prompt caching, a `Sink` abstraction, idempotency tables, retry frameworks, SQLite. Each was considered and cut.
+
+**The bot does not second-guess the user.** No tips, no "did you mean", no refusing a photo because it looks like one already sent. Duplicate detection was built and then removed at the user's explicit instruction: its job is to log food, not to check their work. Only outright failures get reported. Do not reintroduce advisory replies.
 
 ## Verification loop
 

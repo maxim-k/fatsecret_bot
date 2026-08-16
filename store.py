@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from models import Alias, ItemState, QueuedItem
+from models import Alias, QueuedItem
 
 _ALIASES_FILENAME = "aliases.json"
 _QUEUE_FILENAME = "queue.json"
@@ -149,19 +149,3 @@ def append_log(event: str, payload: dict[str, object]) -> None:
     }
     with (_data_dir() / _LOG_FILENAME).open("a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def is_duplicate(photo_sha256: str) -> bool:
-    """Check whether a photo has already produced a submitted queue item.
-
-    Derived from the queue instead of tracked in a fourth file, so there is
-    exactly one place recording what's been logged before.
-
-    :param photo_sha256: SHA-256 hex digest of the photo bytes.
-    :returns: ``True`` if some queue item with this hash reached
-        :attr:`~models.ItemState.SUBMITTED`.
-    """
-    return any(
-        item.photo_sha256 == photo_sha256 and item.state == ItemState.SUBMITTED
-        for item in load_queue()
-    )
