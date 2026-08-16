@@ -82,6 +82,8 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 **FatSecret**
 - **OAuth 1.0 only.** Diary access requires the *Consumer Key + Shared Secret* and three-legged delegation. The OAuth 2.0 *Client ID + Client Secret* pair supports only the `client_credentials` grant, which is app-level food lookup and **cannot touch a user's diary**. Confusing the two produces a bare `400 Invalid signature`, not a helpful message — verified against the live API, and our signing was confirmed byte-identical to `oauthlib`'s reference implementation, so suspect the credentials before the code.
 - `date` is **days since 1970-01-01**, not a timestamp. Use `models.to_epoch_days`.
+- **`number_of_units` means different things per serving.** For a natural-unit serving ("1 slice", 39 g) it is a multiple. For a plain metric serving ("100 g") one unit is a single **gram** — 2.89 units of Mango's "100 g" serving logs 2.89 g, not 289 g. `match.grams_per_unit` encodes this; `Alias.serving_grams` stores grams-per-unit, not the serving's size.
+- Telegram stamps `message.date` in **UTC**. An evening photo files against tomorrow's diary unless converted with `.astimezone()`.
 - **Errors arrive as HTTP 200** with an `error` object in the body. Status codes alone are not enough.
 - A single result comes back as an **object**; multiple come back as a **list**. Numbers arrive as **strings**. `fatsecret._as_list` and `_num` normalise both — use them.
 - **IP whitelisting is mandatory.** Basic tier allows 15 individual addresses, no CIDR. A changing home IP or a new VPS will break auth with a confusing error.
