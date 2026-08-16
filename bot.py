@@ -165,7 +165,6 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         file_id, media_type = message.document.file_id, message.document.mime_type or "image/jpeg"
     elif message.photo:
         file_id, media_type = message.photo[-1].file_id, "image/jpeg"
-        await message.reply_text("Got it — tip: send as a *file* to keep the digits sharp.")
     else:
         return
 
@@ -176,8 +175,6 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     if store.is_duplicate(digest):
         await message.reply_text("Already logged this photo — skipping.")
         return
-
-    await message.reply_text("Reading…")
 
     aliases = store.load_aliases()
     # Most-eaten first: the candidate list is capped, and the model can only
@@ -193,7 +190,9 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text(f"Couldn't read that photo: {exc}")
         return
 
-    day = message.date.date()
+    # Telegram stamps message.date in UTC; an evening photo would otherwise
+    # be filed against tomorrow's diary.
+    day = message.date.astimezone().date()
     queue = store.load_queue()
     lines: list[str] = []
 
@@ -210,7 +209,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
                 lines.append(f"{_describe(queued)}\nFatSecret error: {exc}")
         else:
             reason = "new food" if queued.alias is None else "low confidence"
-            lines.append(f"{_describe(queued)}\nHeld — {reason}. /pending to review.")
+            lines.append(f"{_describe(queued)}\nHeld — {reason}.")
         queue.append(queued)
 
     store.save_queue(queue)
@@ -275,7 +274,7 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
         # Paste-able fallback: the user can still enter it by hand.
         await query.edit_message_text(
             f"{_describe(queued)}\nCouldn't submit: {exc}\n"
-            f"Enter manually: {queued.item.product} — {queued.item.weight_g:g} g"
+            f"{queued.item.product} — {queued.item.weight_g:g} g"
         )
         return
 

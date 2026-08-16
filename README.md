@@ -69,8 +69,6 @@ Requires Python 3.14; `uv python install 3.14` if you don't have it.
 
 Send the bot a photo of food on the scale, with the display readable in frame.
 
-**Send it as a file, not a photo.** Telegram compresses photos, which smears the digits on the display and strips the capture date. The bot will still work but it will nag you.
-
 | Command | Does |
 |---|---|
 | `/pending` | List items waiting on you, each with Approve / Discard buttons |
