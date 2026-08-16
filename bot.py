@@ -120,8 +120,10 @@ async def _teach(queued: QueuedItem) -> Alias:
     :returns: The learned alias, already saved.
     :raises FatSecretError: If the search returns nothing usable.
     """
+    # search returns ~20 hits; one get_food each is the burst that trips
+    # FatSecret's error 12. If the top few have no gram serving, the 20th won't.
     candidates = await fatsecret.search_foods(queued.item.product)
-    for candidate in candidates:
+    for candidate in candidates[:5]:
         food = await fatsecret.get_food(candidate.food_id)
         try:
             serving, _ = match.pick_serving(food, queued.item.weight_g)
