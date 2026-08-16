@@ -154,9 +154,9 @@ def _hold_reason(queued: QueuedItem) -> str | None:
         return "New food."
     if queued.item.confidence < AUTO_SUBMIT_CONFIDENCE:
         return "Low confidence."
-    if match.is_outlier(queued.item.weight_g, queued.alias.weights):
-        seen = sorted(queued.alias.weights)
-        return f"Unusual weight — previously {seen[0]:g}-{seen[-1]:g} g."
+    bounds = match.plausible_range(queued.alias.weights)
+    if bounds is not None and not bounds[0] <= queued.item.weight_g <= bounds[1]:
+        return f"Unusual weight — expected {bounds[0]:.0f}-{bounds[1]:.0f} g."
     return None
 
 

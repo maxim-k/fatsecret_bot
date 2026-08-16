@@ -8,6 +8,7 @@ this is the module most worth unit-testing hard.
 from __future__ import annotations
 
 import re
+import statistics
 from datetime import time
 
 from models import Alias, Food, Serving
@@ -153,21 +154,34 @@ def meal_for(when: time) -> str:
     return "other"
 
 
-def is_outlier(grams: float, history: list[float]) -> bool:
-    """Judge whether a weight is unlike every portion of this food logged before.
+def plausible_range(history: list[float]) -> tuple[float, float] | None:
+    """Weights this food can be expected to weigh, from what it has weighed.
 
-    Catches what actually goes wrong: a scale's status indicator read as a
-    trailing zero, turning 56 g of bread into 560 g. Bounds come from the
-    observed range with a generous 3x margin rather than a mean and standard
-    deviation — real portion histories are wide and lumpy (tomatoes span
-    25-188 g), and a spread-based band flags its own extremes as anomalies.
-    A tenfold misread clears any of these bounds; an ordinary portion never
-    does.
+    A 95% interval (mean +/- 2 standard deviations) over past portions. The
+    deviation is floored at 15% of the mean so a food always logged at the same
+    weight does not reject every ordinary variation, and a two-sample history
+    falls back to a flat +/-50%.
+
+    :param history: Weights previously logged for this food.
+    :returns: Inclusive ``(low, high)`` bounds, or ``None`` if there is no
+        history to judge against.
+    """
+    if not history:
+        return None
+    centre = statistics.fmean(history)
+    spread = centre * 0.5 if len(history) < 3 else 2 * max(statistics.stdev(history), centre * 0.15)
+    return max(centre - spread, 0.0), centre + spread
+
+
+def is_outlier(grams: float, history: list[float]) -> bool:
+    """Judge whether a weight falls outside what this food normally weighs.
+
+    Being asked about a good reading costs one tap; logging a bad one costs
+    silent wrong data, so this errs towards asking.
 
     :param grams: The newly read weight.
     :param history: Weights previously logged for this food.
     :returns: ``True`` if the weight should be questioned rather than logged.
     """
-    if not history:
-        return False
-    return not min(history) / 3 <= grams <= max(history) * 3
+    bounds = plausible_range(history)
+    return bounds is not None and not bounds[0] <= grams <= bounds[1]

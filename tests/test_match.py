@@ -14,6 +14,9 @@ from match import (
     pick_serving,
     units_for,
 )
+from match import (
+    plausible_range as match_plausible,
+)
 from models import Alias, Food, Serving
 
 # --- normalize -----------------------------------------------------------
@@ -277,11 +280,19 @@ def test_is_outlier_catches_a_trailing_zero_misread() -> None:
 
 
 def test_is_outlier_allows_a_wide_but_real_history() -> None:
-    # Tomatoes genuinely span 25-188 g; neither end is an anomaly.
+    # Tomatoes genuinely span 25-188 g; the band widens with the spread.
     tomatoes = [25.0, 40.0, 60.0, 90.0, 188.0]
-    assert not is_outlier(25.0, tomatoes)
-    assert not is_outlier(188.0, tomatoes)
+    assert not is_outlier(30.0, tomatoes)
+    assert not is_outlier(180.0, tomatoes)
     assert is_outlier(900.0, tomatoes)
+
+
+def test_plausible_range_floors_the_spread_for_a_constant_history() -> None:
+    # Always logged at 190 g: a 15% floor keeps ordinary variation loggable.
+    low, high = match_plausible([190.0] * 5)
+    assert low < 190.0 < high
+    assert not is_outlier(200.0, [190.0] * 5)
+    assert is_outlier(1900.0, [190.0] * 5)
 
 
 def test_is_outlier_allows_ordinary_variation() -> None:
