@@ -287,10 +287,9 @@ def test_is_outlier_allows_a_wide_but_real_history() -> None:
     assert is_outlier(900.0, tomatoes)
 
 
-def test_plausible_range_floors_the_spread_for_a_constant_history() -> None:
-    # Always logged at 190 g: a 15% floor keeps ordinary variation loggable.
-    low, high = match_plausible([190.0] * 5)
-    assert low < 190.0 < high
+def test_plausible_range_is_the_observed_range_plus_a_quarter() -> None:
+    assert match_plausible([100.0, 200.0]) == (75.0, 250.0)
+    # Always logged at 190 g still leaves room for ordinary variation.
     assert not is_outlier(200.0, [190.0] * 5)
     assert is_outlier(1900.0, [190.0] * 5)
 

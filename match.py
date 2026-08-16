@@ -8,7 +8,6 @@ this is the module most worth unit-testing hard.
 from __future__ import annotations
 
 import re
-import statistics
 from datetime import time
 
 from models import Alias, Food, Serving
@@ -157,10 +156,9 @@ def meal_for(when: time) -> str:
 def plausible_range(history: list[float]) -> tuple[float, float] | None:
     """Weights this food can be expected to weigh, from what it has weighed.
 
-    A 95% interval (mean +/- 2 standard deviations) over past portions. The
-    deviation is floored at 15% of the mean so a food always logged at the same
-    weight does not reject every ordinary variation, and a two-sample history
-    falls back to a flat +/-50%.
+    The observed range with a quarter's slack at each end. Wide enough that
+    ordinary variation logs without a prompt, tight enough that a trailing zero
+    misread off the scale never does.
 
     :param history: Weights previously logged for this food.
     :returns: Inclusive ``(low, high)`` bounds, or ``None`` if there is no
@@ -168,9 +166,7 @@ def plausible_range(history: list[float]) -> tuple[float, float] | None:
     """
     if not history:
         return None
-    centre = statistics.fmean(history)
-    spread = centre * 0.5 if len(history) < 3 else 2 * max(statistics.stdev(history), centre * 0.15)
-    return max(centre - spread, 0.0), centre + spread
+    return min(history) * 0.75, max(history) * 1.25
 
 
 def is_outlier(grams: float, history: list[float]) -> bool:
