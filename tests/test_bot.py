@@ -75,11 +75,6 @@ def test_owner_id_rejects_missing_or_non_numeric(monkeypatch: pytest.MonkeyPatch
         bot._owner_id()
 
 
-def test_auto_submit_threshold_is_below_one() -> None:
-    # A threshold of exactly 1.0 would never fire; 0.0 would submit unread weights.
-    assert 0.0 < bot.AUTO_SUBMIT_CONFIDENCE < 1.0
-
-
 def test_concurrent_updates_stays_at_one() -> None:
     # on_photo does load_queue -> await vision -> save_queue. That read-modify-write
     # only holds while python-telegram-bot serialises updates; several photos sent

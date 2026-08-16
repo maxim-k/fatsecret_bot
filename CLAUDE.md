@@ -57,7 +57,14 @@ Modules are written and changed independently. **Do not change `models.py` as a 
 
 Daily auth health-checks, scheduled nudges, digest messages, prompt caching, a `Sink` abstraction, idempotency tables, retry frameworks, SQLite. Each was considered and cut.
 
-**The bot does not second-guess the user.** No tips, no "did you mean", no refusing a photo because it looks like one already sent. Duplicate detection was built and then removed at the user's explicit instruction: its job is to log food, not to check their work. Only outright failures get reported. Do not reintroduce advisory replies.
+**The bot does not second-guess the user, and does not withhold work.** Removed at the user's explicit instruction, do not reintroduce:
+
+- duplicate-photo detection — send the same photo ten times, it logs ten times
+- the auto-submit confidence threshold — a recognised food with a known alias is logged, full stop
+- the `raw_digits` vs `weight_g` consistency check, which only existed to feed that threshold
+- "send as a file" tips, "/pending to review" prompts, and every other advisory reply
+
+The only thing still held back is a food with no alias, because there is no `food_id` to log against — that is an impossibility, not a judgement. Confidence and `raw_digits` are still shown so a misread is visible, and `/undo` exists. Reporting a failure is fine; warning, advising, or refusing is not.
 
 ## Verification loop
 

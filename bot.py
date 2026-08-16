@@ -13,7 +13,6 @@ import logging
 import os
 import uuid
 from datetime import date
-from typing import Final
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -32,11 +31,6 @@ import vision
 from models import Alias, ItemState, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
-
-# A confident reading against an already-taught food is submitted without asking.
-# Anything less is queued: the backlog this bot exists to kill comes from friction,
-# but silently logging a misread weight would cost the user's trust entirely.
-AUTO_SUBMIT_CONFIDENCE: Final = 0.8
 
 
 def _owner_id() -> int:
@@ -205,7 +199,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
 
-        if queued.alias is not None and item.confidence >= AUTO_SUBMIT_CONFIDENCE:
+        if queued.alias is not None:
             try:
                 lines.append(await _submit(queued))
                 queued.state = ItemState.SUBMITTED
@@ -213,8 +207,8 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
                 # The sink failing must not lose the item — keep it reviewable.
                 lines.append(f"{_describe(queued)}\nFatSecret error: {exc}")
         else:
-            reason = "new food" if queued.alias is None else "low confidence"
-            lines.append(f"{_describe(queued)}\nHeld — {reason}.")
+            # Only an unknown food is held: there is no food_id to log against.
+            lines.append(_describe(queued))
         queue.append(queued)
 
     store.save_queue(queue)

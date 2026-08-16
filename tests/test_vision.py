@@ -129,16 +129,3 @@ async def test_recognize_uses_env_model_override(
 def test_model_id_defaults_to_haiku(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
     assert vision._DEFAULT_MODEL == "claude-haiku-4-5"
-
-
-def test_digits_agree_rejects_parsed_weight_that_differs_from_transcription() -> None:
-    # Observed live: model transcribed "170" but reported 170.1 and auto-submitted.
-    bad = RecognizedItem(product="Egg", weight_g=170.1, raw_digits="170", confidence=0.85)
-    assert not vision._digits_agree(bad)
-    good = RecognizedItem(product="Egg", weight_g=117.0, raw_digits="117", confidence=0.9)
-    assert vision._digits_agree(good)
-
-
-def test_digits_agree_allows_unit_conversion() -> None:
-    oz = RecognizedItem(product="Egg", weight_g=113.4, raw_digits="4.0 oz", confidence=0.9)
-    assert vision._digits_agree(oz)
