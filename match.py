@@ -151,3 +151,23 @@ def meal_for(when: time) -> str:
     if 18 <= when.hour < 24:
         return "dinner"
     return "other"
+
+
+def is_outlier(grams: float, history: list[float]) -> bool:
+    """Judge whether a weight is unlike every portion of this food logged before.
+
+    Catches what actually goes wrong: a scale's status indicator read as a
+    trailing zero, turning 56 g of bread into 560 g. Bounds come from the
+    observed range with a generous 3x margin rather than a mean and standard
+    deviation — real portion histories are wide and lumpy (tomatoes span
+    25-188 g), and a spread-based band flags its own extremes as anomalies.
+    A tenfold misread clears any of these bounds; an ordinary portion never
+    does.
+
+    :param grams: The newly read weight.
+    :param history: Weights previously logged for this food.
+    :returns: ``True`` if the weight should be questioned rather than logged.
+    """
+    if not history:
+        return False
+    return not min(history) / 3 <= grams <= max(history) * 3

@@ -57,14 +57,13 @@ Modules are written and changed independently. **Do not change `models.py` as a 
 
 Daily auth health-checks, scheduled nudges, digest messages, prompt caching, a `Sink` abstraction, idempotency tables, retry frameworks, SQLite. Each was considered and cut.
 
-**The bot does not second-guess the user, and does not withhold work.** Removed at the user's explicit instruction, do not reintroduce:
+**Guard the model and the API. Never correct the user.** This distinction is the whole rule, and getting it backwards has annoyed the user twice.
 
-- duplicate-photo detection — send the same photo ten times, it logs ten times
-- the auto-submit confidence threshold — a recognised food with a known alias is logged, full stop
-- the `raw_digits` vs `weight_g` consistency check, which only existed to feed that threshold
-- "send as a file" tips, "/pending to review" prompts, and every other advisory reply
+*User behaviour is never questioned.* Removed at explicit instruction, do not reintroduce: duplicate-photo detection (send the same photo ten times, it logs ten times), "send as a file" tips, "/pending to review" prompts, and every other advisory reply.
 
-The only thing still held back is a food with no alias, because there is no `food_id` to log against — that is an impossibility, not a judgement. Confidence and `raw_digits` are still shown so a misread is visible, and `/undo` exists. Reporting a failure is fine; warning, advising, or refusing is not.
+*Model and API output is absolutely questioned*, via `bot._hold_reason`. An item is held and the user asked when: the food has no alias, the model's confidence is below `AUTO_SUBMIT_CONFIDENCE`, `vision._digits_agree` finds `raw_digits` contradicting `weight_g`, or `match.is_outlier` finds the weight unlike anything logged for that food before. That last one exists because a scale's status indicator gets read as a trailing zero — 56 g of bread became 560 g.
+
+Errors are reported. Anomalies are asked about. The user's own input is not policed.
 
 ## Verification loop
 

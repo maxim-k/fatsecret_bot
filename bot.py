@@ -13,6 +13,7 @@ import logging
 import os
 import uuid
 from datetime import date
+from typing import Final
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -31,6 +32,10 @@ import vision
 from models import Alias, ItemState, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
+
+# Auto-approve a confident reading of a known food; anything shakier gets asked
+# about. This gates the model's output, never the user's input.
+AUTO_SUBMIT_CONFIDENCE: Final = 0.8
 
 
 def _owner_id() -> int:
@@ -79,6 +84,13 @@ async def _submit(queued: QueuedItem) -> str:
         day=queued.day,
         meal=queued.meal,
     )
+    aliases = store.load_aliases()
+    key = match.normalize(queued.item.product)
+    if key in aliases:
+        # Keep the recent tail only; portion sizes drift over months.
+        aliases[key].weights = [*aliases[key].weights, queued.item.weight_g][-20:]
+        aliases[key].hits += 1
+        store.save_aliases(aliases)
     store.append_log(
         "submitted",
         {
@@ -125,6 +137,27 @@ async def _teach(queued: QueuedItem) -> Alias:
     raise fatsecret.FatSecretError(
         "no_match", f"no weighable food found for {queued.item.product!r}"
     )
+
+
+def _hold_reason(queued: QueuedItem) -> str | None:
+    """Decide whether this item needs a human before it is logged.
+
+    Every reason here is a doubt about the model's output or the API's data,
+    never about the user's input. Sending the same photo twice is the user's
+    business; a reading that contradicts itself or is nothing like any portion
+    they have ever eaten is not.
+
+    :param queued: The freshly recognised item.
+    :returns: A short reason to show the user, or ``None`` to log it now.
+    """
+    if queued.alias is None:
+        return "New food."
+    if queued.item.confidence < AUTO_SUBMIT_CONFIDENCE:
+        return "Low confidence."
+    if match.is_outlier(queued.item.weight_g, queued.alias.weights):
+        seen = sorted(queued.alias.weights)
+        return f"Unusual weight — previously {seen[0]:g}-{seen[-1]:g} g."
+    return None
 
 
 def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -> QueuedItem:
@@ -199,7 +232,8 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
 
-        if queued.alias is not None:
+        hold = _hold_reason(queued)
+        if hold is None:
             try:
                 lines.append(await _submit(queued))
                 queued.state = ItemState.SUBMITTED
@@ -207,8 +241,7 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
                 # The sink failing must not lose the item — keep it reviewable.
                 lines.append(f"{_describe(queued)}\nFatSecret error: {exc}")
         else:
-            # Only an unknown food is held: there is no food_id to log against.
-            lines.append(_describe(queued))
+            lines.append(f"{_describe(queued)}\n{hold}")
         queue.append(queued)
 
     store.save_queue(queue)

@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Final, Literal, cast
 
 import pydantic
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-from models import Recognition
+from models import Recognition, RecognizedItem
 
 # Deliberately the cheap model — see .env.example. The user upgrades to
 # claude-sonnet-5 (then claude-opus-5) only if raw_digits proves unreliable on
@@ -211,4 +212,25 @@ async def recognize(
         raise RecognitionError(
             f"model returned no parseable text content (stop_reason={response.stop_reason!r})"
         )
+    for item in response.parsed_output.items:
+        if not _digits_agree(item):
+            # The model transcribed one number and reported another; that is not
+            # a reading, and the user gets asked rather than told.
+            item.confidence = 0.0
     return response.parsed_output
+
+
+def _digits_agree(item: RecognizedItem) -> bool:
+    """Check the parsed weight against the digits the model says it saw.
+
+    Observed live: ``raw_digits="170"`` alongside ``weight_g=170.1``.
+
+    :param item: One recognised item straight from the model.
+    :returns: ``True`` if the two agree, or a unit conversion explains it.
+    """
+    if re.search(r"oz|lb|kg", item.raw_digits, re.IGNORECASE):
+        return True  # converting to grams legitimately changes the number
+    number = re.search(r"\d+(?:[.,]\d+)?", item.raw_digits)
+    if number is None:
+        return False
+    return abs(float(number.group().replace(",", ".")) - item.weight_g) < 0.05

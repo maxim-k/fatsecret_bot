@@ -7,6 +7,7 @@ import pytest
 from match import (
     NoGramServingError,
     grams_per_unit,
+    is_outlier,
     lookup,
     meal_for,
     normalize,
@@ -267,3 +268,27 @@ def test_meal_for_time_of_day() -> None:
     assert meal_for(time(23, 59)) == "dinner"
     assert meal_for(time(0, 0)) == "other"
     assert meal_for(time(5, 59)) == "other"
+
+
+def test_is_outlier_catches_a_trailing_zero_misread() -> None:
+    # 56 g of bread read as 560 g: the failure this exists for.
+    assert is_outlier(560.0, [56.0])
+    assert not is_outlier(56.0, [56.0])
+
+
+def test_is_outlier_allows_a_wide_but_real_history() -> None:
+    # Tomatoes genuinely span 25-188 g; neither end is an anomaly.
+    tomatoes = [25.0, 40.0, 60.0, 90.0, 188.0]
+    assert not is_outlier(25.0, tomatoes)
+    assert not is_outlier(188.0, tomatoes)
+    assert is_outlier(900.0, tomatoes)
+
+
+def test_is_outlier_allows_ordinary_variation() -> None:
+    eggs = [120.0, 124.0, 124.0, 135.0]
+    assert not is_outlier(117.0, eggs)
+    assert is_outlier(1170.0, eggs)
+
+
+def test_is_outlier_passes_everything_with_no_history() -> None:
+    assert not is_outlier(999.0, [])
