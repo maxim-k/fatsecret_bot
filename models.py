@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +53,56 @@ class Recognition(BaseModel):
     """Everything one photo yielded. A plate may hold several items."""
 
     items: list[RecognizedItem]
+
+
+class NutritionLabel(BaseModel):
+    """A packaged product's identity and panel, read off its photos.
+
+    Field names match ``food.create.v2``'s parameters exactly, and so do the
+    units — grams for the macros, milligrams for minerals, micrograms for
+    vitamins A and D. Keeping one set of names means the panel travels from the
+    model to the API without a translation table in between, which is one fewer
+    place to map ``carbs`` onto ``carbohydrate`` and be silently wrong.
+
+    Every value is **per serving**, which is how ``food.create.v2`` reads them
+    and how the label prints them.
+    """
+
+    name: str
+    brand: str | None = None
+    # The serving as the label words it: "1 bar", "2 cookies", "1 cup".
+    serving_description: str
+    # The same serving as a quantity. Reported in whatever unit is printed;
+    # ounces are converted to grams downstream rather than by the model, since
+    # arithmetic is the part of reading a label it is least reliable at.
+    serving_amount: float | None = Field(default=None, gt=0)
+    serving_unit: Literal["g", "ml", "oz"] | None = None
+
+    calories: float = Field(ge=0)
+    fat: float = Field(ge=0)
+    carbohydrate: float = Field(ge=0)
+    protein: float = Field(ge=0)
+
+    saturated_fat: float | None = Field(default=None, ge=0)
+    polyunsaturated_fat: float | None = Field(default=None, ge=0)
+    monounsaturated_fat: float | None = Field(default=None, ge=0)
+    trans_fat: float | None = Field(default=None, ge=0)
+    cholesterol: float | None = Field(default=None, ge=0)
+    sodium: float | None = Field(default=None, ge=0)
+    potassium: float | None = Field(default=None, ge=0)
+    fiber: float | None = Field(default=None, ge=0)
+    sugar: float | None = Field(default=None, ge=0)
+    vitamin_d: float | None = Field(default=None, ge=0)
+    vitamin_a: float | None = Field(default=None, ge=0)
+    vitamin_c: float | None = Field(default=None, ge=0)
+    calcium: float | None = Field(default=None, ge=0)
+    iron: float | None = Field(default=None, ge=0)
+
+    # Nutrients the label gave only as a percentage of Daily Value, keyed by the
+    # field names above. Older labels print "10% calcium" and no milligrams at
+    # all. Resolved against the FDA table by ``match.label_nutrients`` rather
+    # than by the model, because a lookup cannot misremember a constant.
+    percent_daily_value: dict[str, float] = Field(default_factory=dict)
 
 
 class Serving(BaseModel):

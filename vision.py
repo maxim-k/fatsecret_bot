@@ -20,7 +20,7 @@ import pydantic
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam
 
-from models import Recognition, RecognizedItem
+from models import NutritionLabel, Recognition, RecognizedItem
 
 # Haiku reads a photo in 2-4 s against Sonnet's 6-12 s, but misread this user's
 # egg display three times out of three. So Haiku runs first and Sonnet is spent
@@ -115,6 +115,63 @@ logged product names are given with each request as reuse candidates — when \
 a food on the scale matches one of them, use that exact string verbatim for \
 product; do not paraphrase, reformat, or change its capitalization. Only \
 propose a new name when none of the candidates match.
+"""
+
+
+_LABEL_PROMPT: Final = """\
+You are reading photographs of a packaged food product: its front-of-pack \
+artwork and its Nutrition Facts panel, in either order and sometimes in one \
+frame. Transcribe the panel into structured data so it can be added to a food \
+database.
+
+Name and brand:
+The product name is what the item is called, without the manufacturer. The \
+brand is the manufacturer, and goes in `brand`.
+
+A quantity inside the product's own name stays part of the name. Modern \
+packaging routinely sells the nutrition in the title — "Protein Bar 20g \
+Protein", "Fiber One 10g Fiber", "Zero Sugar 15g Protein Shake". Those \
+numbers are marketing, printed on the front of the pack in the same typeface \
+as the rest of the name. They are NOT the serving weight and NOT a nutrient \
+reading: take nutrient values only from the Nutrition Facts panel, and keep \
+the name exactly as the package writes it, digits and all.
+
+Serving size:
+Read the serving from the panel's "Serving size" line, not from the net \
+weight of the package — a 60 g bar and a 250 g bag of chips both have a \
+serving size, and only one of them is the whole package.
+- serving_description: the serving as the label words it, e.g. "1 bar", \
+  "2 cookies", "1 cup", "3 pieces".
+- serving_amount and serving_unit: the measured quantity in parentheses, \
+  e.g. "1 bar (60g)" gives 60 and "g". Report the unit as printed — "g", \
+  "ml" or "oz" — and do not convert between them; that conversion is done \
+  afterwards from your reported unit. If the panel gives no measured \
+  quantity at all, leave both unset.
+
+Nutrition values:
+Every value is PER SERVING, exactly as the panel lists it, never per 100 g \
+unless the panel's serving is 100 g, and never per package. Use the panel's \
+own units: grams for fat, carbohydrate, protein, fiber, sugar and the fat \
+breakdown; milligrams for cholesterol, sodium, potassium, calcium, iron and \
+vitamin C; micrograms for vitamin D and vitamin A. Transcribe the number \
+printed; do not compute, round, or reconcile values that look inconsistent.
+
+Percentages are not amounts:
+Panels print "%DV" beside many nutrients, and older ones print a percentage \
+INSTEAD of an amount. Never put a percentage in a nutrient field — 10% \
+calcium is not 10 mg. When the panel gives an actual amount, use it. When it \
+gives only a percentage, leave that nutrient's field unset and put the number \
+in `percent_daily_value` keyed by the same field name, e.g. \
+{"calcium": 10, "iron": 15}. The percentage is converted to an amount \
+afterwards from a fixed reference table, so report it as the percentage it is.
+
+When a nutrient is simply absent from the panel, leave it unset. Do not infer \
+a plausible value, and do not enter zero for something the label does not \
+mention — an unset field means "not stated", while zero means the label \
+printed a zero.
+
+If the panel is unreadable in the photos, say so rather than reconstructing \
+a plausible one from the product's name.
 """
 
 
@@ -237,6 +294,78 @@ async def recognize(
             # The model transcribed one number and reported another; that is not
             # a reading, and the user gets asked rather than told.
             item.confidence = 0.0
+    return response.parsed_output
+
+
+async def read_label(
+    images: list[tuple[bytes, str]],
+    name: str | None = None,
+    brand: str | None = None,
+) -> NutritionLabel:
+    """Read a product's nutrition panel from one or more photos.
+
+    Always uses the stronger model. A panel is dense small print read once in a
+    product's lifetime, so the seconds Haiku would save are worth nothing
+    against a misread milligram that then repeats in every future entry.
+
+    :param images: ``(bytes, media_type)`` for each photo, typically the pack
+        front and the panel. All are sent in one request so the model can take
+        the name from one frame and the numbers from another.
+    :param name: Product name supplied by the user, which overrides whatever
+        the packaging says.
+    :param brand: Brand supplied by the user, same precedence.
+    :returns: The transcribed panel.
+    :raises RecognitionError: If no photos were given, or the model returned
+        nothing parseable or something that failed schema validation.
+    """
+    if not images:
+        raise RecognitionError("no photos to read a label from")
+    client = _get_client()
+
+    told = ""
+    if name:
+        told += f"\nThe user says the product name is exactly: {name}\n"
+    if brand:
+        told += f"The user says the brand is exactly: {brand}\n"
+    if told:
+        told += (
+            "Use those strings verbatim, including any digits and units they "
+            "contain, rather than what the packaging shows."
+        )
+
+    content: list[dict[str, object]] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": cast("_ImageMediaType", media_type),
+                "data": base64.standard_b64encode(data).decode("ascii"),
+            },
+        }
+        for data, media_type in images
+    ]
+    content.append(
+        {
+            "type": "text",
+            "text": "Read this product's name, brand and Nutrition Facts panel." + told,
+        }
+    )
+
+    try:
+        response = await client.messages.parse(
+            model=escalation_model(),
+            max_tokens=2048,
+            system=_LABEL_PROMPT,
+            messages=[cast("MessageParam", {"role": "user", "content": content})],
+            output_format=NutritionLabel,
+        )
+    except pydantic.ValidationError as exc:
+        raise RecognitionError(f"label response failed schema validation: {exc}") from exc
+
+    if response.parsed_output is None:
+        raise RecognitionError(
+            f"model returned no parseable label (stop_reason={response.stop_reason!r})"
+        )
     return response.parsed_output
 
 

@@ -391,3 +391,49 @@ async def test_search_keeps_macros_and_brand_for_the_picker() -> None:
     # Absent fields stay None rather than becoming empty strings.
     assert generic.brand is None
     assert generic.description is None
+
+
+@respx.mock
+async def test_create_food_sends_the_panel_and_returns_the_id() -> None:
+    route = respx.post("https://platform.fatsecret.com/rest/server.api").mock(
+        return_value=httpx.Response(200, json={"food_id": {"value": "12345"}})
+    )
+    food_id = await fatsecret.create_food(
+        name="Super protein bar 23 g",
+        brand="SuperCompany",
+        serving_description="1 bar",
+        nutrients={"calories": 240.0, "fat": 11.0, "carbohydrate": 24.0, "protein": 23.0},
+        serving_amount=60.0,
+    )
+    assert food_id == 12345
+    sent = _body_params(route.calls[0].request)
+    assert sent["method"] == "food.create.v2"
+    assert sent["food_name"] == "Super protein bar 23 g"
+    assert sent["brand_name"] == "SuperCompany"
+    assert sent["brand_type"] == "manufacturer"
+    assert sent["serving_size"] == "1 bar"
+    assert sent["serving_amount"] == "60.0"
+    assert sent["serving_amount_unit"] == "g"
+    assert sent["protein"] == "23.0"
+
+
+@respx.mock
+async def test_create_food_omits_the_serving_amount_when_the_label_gave_none() -> None:
+    route = respx.post("https://platform.fatsecret.com/rest/server.api").mock(
+        return_value=httpx.Response(200, json={"food_id": "999"})
+    )
+    assert await fatsecret.create_food("Bar", "Brand", "1 bar", {"calories": 100.0}) == 999
+    sent = _body_params(route.calls[0].request)
+    assert "serving_amount" not in sent
+
+
+@respx.mock
+async def test_create_food_surfaces_a_tier_rejection() -> None:
+    # Basic answers error 10 for this method; the caller must see that rather
+    # than a bare KeyError on the missing food_id.
+    respx.post("https://platform.fatsecret.com/rest/server.api").mock(
+        return_value=httpx.Response(200, json={"error": {"code": 10, "message": "Unknown method"}})
+    )
+    with pytest.raises(fatsecret.FatSecretError) as caught:
+        await fatsecret.create_food("Bar", "Brand", "1 bar", {"calories": 100.0})
+    assert caught.value.code == 10

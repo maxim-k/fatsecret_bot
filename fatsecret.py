@@ -321,6 +321,51 @@ def _parse_diary_entry(raw: dict[str, Any], day: date) -> DiaryEntry:
     )
 
 
+async def create_food(
+    name: str,
+    brand: str,
+    serving_description: str,
+    nutrients: dict[str, float],
+    serving_amount: float | None = None,
+    serving_unit: str = "g",
+) -> int:
+    """Create a custom food and return its id.
+
+    Requires a Premier tier: on Basic this method is not merely forbidden but
+    absent, answering ``error 10, "Unknown method"`` where an available method
+    with a bad call answers 101. ``brand_name`` is required despite the docs
+    describing it as brand-only.
+
+    :param name: Product name, without the brand.
+    :param brand: Manufacturer name.
+    :param serving_description: The serving as the label words it, e.g. "1 bar".
+    :param serving_amount: That serving's measured size, if the label gave one.
+    :param serving_unit: Unit of ``serving_amount`` — ``g``, ``ml`` or ``oz``.
+    :param nutrients: Per-serving values keyed by FatSecret's own parameter
+        names, as produced by :func:`match.label_nutrients`.
+    :returns: The new food's id.
+    :raises FatSecretError: If FatSecret returns an error response.
+    """
+    params = {
+        "method": "food.create.v2",
+        "food_name": name,
+        # "manufacturer" is the default and the only one that fits a packaged
+        # product; "restaurant" and "supermarket" describe where it was served.
+        "brand_type": "manufacturer",
+        "brand_name": brand,
+        "serving_size": serving_description,
+        "format": "json",
+        **{nutrient: str(value) for nutrient, value in nutrients.items()},
+    }
+    if serving_amount is not None:
+        params["serving_amount"] = str(serving_amount)
+        params["serving_amount_unit"] = serving_unit
+    body = await _request("POST", _API_URL, params)
+    # Same {"value": ...} wrapping that create_entry has to unwrap.
+    raw_id = body["food_id"]
+    return int(raw_id["value"]) if isinstance(raw_id, dict) else int(raw_id)
+
+
 async def create_entry(
     food_id: int, name: str, serving_id: int, units: float, day: date, meal: str = "other"
 ) -> DiaryEntry:

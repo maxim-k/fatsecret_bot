@@ -5,19 +5,22 @@ from datetime import datetime, time
 import pytest
 
 from match import (
+    DAILY_VALUES,
     NoGramServingError,
     grams_per_unit,
     is_outlier,
+    label_nutrients,
     lookup,
     meal_for,
     normalize,
     pick_serving,
+    serving_grams,
     units_for,
 )
 from match import (
     plausible_range as match_plausible,
 )
-from models import Alias, Food, Serving
+from models import Alias, Food, NutritionLabel, Serving
 
 # --- normalize -----------------------------------------------------------
 
@@ -326,3 +329,93 @@ def test_lookup_prefers_an_exact_match() -> None:
     exact = Alias(food_id=7, food_name="Bread", serving_id=1, serving_grams=1.0)
     aliases = {"bread": exact, "bread alone san francisco sourdough": _alias()}
     assert lookup("bread", aliases) is exact
+
+
+# --- nutrition labels -----------------------------------------------------------
+
+
+def _label(**kwargs: object) -> NutritionLabel:
+    base: dict[str, object] = {
+        "name": "Super protein bar 23 g",
+        "brand": "SuperCompany",
+        "serving_description": "1 bar",
+        "serving_amount": 60.0,
+        "serving_unit": "g",
+        "calories": 240.0,
+        "fat": 11.0,
+        "carbohydrate": 24.0,
+        "protein": 23.0,
+    }
+    return NutritionLabel(**{**base, **kwargs})  # type: ignore[arg-type]
+
+
+def test_percent_daily_value_becomes_an_absolute_amount() -> None:
+    label = _label(percent_daily_value={"calcium": 10, "iron": 15, "vitamin_d": 20})
+    nutrients = label_nutrients(label)
+    assert nutrients["calcium"] == pytest.approx(130.0)  # 10% of 1300 mg
+    assert nutrients["iron"] == pytest.approx(2.7)  # 15% of 18 mg
+    assert nutrients["vitamin_d"] == pytest.approx(4.0)  # 20% of 20 mcg
+
+
+def test_a_printed_amount_beats_a_percentage() -> None:
+    # Label percentages are rounded to whole numbers; the milligrams beside
+    # them are not, so the exact figure has to win.
+    label = _label(calcium=137.0, percent_daily_value={"calcium": 10})
+    assert label_nutrients(label)["calcium"] == 137.0
+
+
+def test_unknown_percent_keys_are_dropped_not_guessed() -> None:
+    label = _label(percent_daily_value={"magnesium": 20, "riboflavin": 15})
+    nutrients = label_nutrients(label)
+    assert "magnesium" not in nutrients
+    assert "riboflavin" not in nutrients
+
+
+def test_total_sugar_is_never_derived_from_a_percentage() -> None:
+    # The 50 g Daily Value is for *added* sugars; FatSecret's field is total.
+    assert "sugar" not in DAILY_VALUES
+    assert "sugar" not in label_nutrients(_label(percent_daily_value={"sugar": 40}))
+
+
+def test_unstated_nutrients_are_omitted_rather_than_zeroed() -> None:
+    # An absent field means "the label didn't say", which is not the same claim
+    # as zero and must not be sent as one.
+    nutrients = label_nutrients(_label())
+    assert set(nutrients) == {"calories", "fat", "carbohydrate", "protein"}
+    assert label_nutrients(_label(trans_fat=0.0))["trans_fat"] == 0.0
+
+
+def test_serving_in_ounces_converts_to_grams() -> None:
+    assert serving_grams(_label(serving_amount=1.0, serving_unit="oz")) == pytest.approx(28.3495)
+
+
+def test_serving_in_millilitres_is_not_a_weight() -> None:
+    # Treating 1 ml as 1 g misreports everything that is not water.
+    assert serving_grams(_label(serving_amount=250.0, serving_unit="ml")) is None
+    assert serving_grams(_label(serving_amount=None, serving_unit=None)) is None
+
+
+def test_daily_values_match_the_fda_table() -> None:
+    # fda.gov/food/nutrition-facts-label, adults and children 4+.
+    assert DAILY_VALUES["fat"] == 78.0
+    assert DAILY_VALUES["saturated_fat"] == 20.0
+    assert DAILY_VALUES["carbohydrate"] == 275.0
+    assert DAILY_VALUES["fiber"] == 28.0
+    assert DAILY_VALUES["protein"] == 50.0
+    assert DAILY_VALUES["cholesterol"] == 300.0
+    assert DAILY_VALUES["sodium"] == 2300.0
+    assert DAILY_VALUES["potassium"] == 4700.0
+    assert DAILY_VALUES["calcium"] == 1300.0
+    assert DAILY_VALUES["iron"] == 18.0
+    assert DAILY_VALUES["vitamin_c"] == 90.0
+    assert DAILY_VALUES["vitamin_a"] == 900.0
+    assert DAILY_VALUES["vitamin_d"] == 20.0
+
+
+def test_every_required_create_parameter_is_present() -> None:
+    # food.create.v2 requires calories, fat, carbohydrate and protein. Leaving
+    # calories out of the panel made the call fail with "Missing required
+    # parameter" against the live API, which mocks did not catch.
+    nutrients = label_nutrients(_label())
+    for required in ("calories", "fat", "carbohydrate", "protein"):
+        assert required in nutrients, required

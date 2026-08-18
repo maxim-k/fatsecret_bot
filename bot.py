@@ -32,7 +32,7 @@ import fatsecret
 import match
 import store
 import vision
-from models import Alias, Food, ItemState, QueuedItem, RecognizedItem
+from models import Alias, Food, ItemState, NutritionLabel, QueuedItem, RecognizedItem
 
 log = logging.getLogger(__name__)
 
@@ -73,11 +73,38 @@ class _Album:
     day: date
     meal: str
     photos: list[_AlbumPhoto] = field(default_factory=list)
+    # Set by a /new caption: the batch is a product to add, not food to log.
+    product: tuple[str | None, str | None] | None = None
     error: str | None = None
     task: asyncio.Task[None] | None = None
 
 
 _albums: dict[str, _Album] = {}
+
+# Display names for the nutrients shown back before a food is created. The units
+# and the values themselves live in match; this is only how they are spelled.
+_NUTRIENT_LABELS: Final[dict[str, str]] = {
+    "saturated_fat": "Sat fat",
+    "polyunsaturated_fat": "Poly fat",
+    "monounsaturated_fat": "Mono fat",
+    "trans_fat": "Trans fat",
+    "cholesterol": "Cholesterol",
+    "sodium": "Sodium",
+    "potassium": "Potassium",
+    "fiber": "Fiber",
+    "sugar": "Sugar",
+    "vitamin_d": "Vitamin D",
+    "vitamin_a": "Vitamin A",
+    "vitamin_c": "Vitamin C",
+    "calcium": "Calcium",
+    "iron": "Iron",
+}
+
+# A panel read but not yet created, waiting on a tap. food.create has no delete
+# and no edit, so this handoff is deliberately seconds long and nothing lingers.
+# ponytail: in memory, so a restart between reading and tapping drops the panel
+# and the photos have to be re-sent. Persist it only if that actually happens.
+_pending_labels: dict[str, NutritionLabel] = {}
 
 # The queue is read, modified and written back around awaits. Updates alone are
 # serialised (max_concurrent_updates == 1), but an album flush runs as its own
@@ -383,6 +410,36 @@ def parse_backlog(caption: str) -> tuple[date, str] | None:
     return day, meal
 
 
+NEW_USAGE: Final = (
+    "/new — photograph the product and its nutrition label, and I'll add it.\n"
+    "Name it yourself with /new Name, Brand — for example:\n"
+    "/new Super protein bar 23 g, SuperCompany"
+)
+
+
+def parse_new(caption: str) -> tuple[str | None, str | None] | None:
+    """Read a ``/new`` directive out of a photo caption.
+
+    Deliberately does not use :func:`parse_correction`: that reads a trailing
+    number as a weight, and product names now routinely end in one — "Fiber One
+    10 g Fiber" would become "Fiber One" weighing 10 grams. Everything before
+    the last comma is the name, digits included.
+
+    :param caption: Raw caption text.
+    :returns: ``(name, brand)``, either of which may be ``None`` when the
+        caption was a bare ``/new`` and the packaging should be read instead;
+        or ``None`` when this is not a ``/new`` caption at all.
+    """
+    stripped = caption.strip()
+    head, _, rest = stripped.partition(" ")
+    if head.lower() != "/new":
+        return None
+    name, _, brand = rest.strip().rpartition(",")
+    if not name:  # no comma: the whole thing is a name, or nothing at all
+        return (brand.strip() or None), None
+    return name.strip() or None, brand.strip() or None
+
+
 def _apply_correction(queued: QueuedItem, text: str) -> None:
     """Overwrite a recognised item from what the user actually said.
 
@@ -477,14 +534,20 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         directive = parse_backlog(caption)
     except ValueError as exc:
         directive, error = None, str(exc)
-    if directive is not None:
+    product = parse_new(caption)
+    if directive is not None or product is not None:
         # A directive is an instruction about the batch, not a name for the food.
-        day, meal, caption = *directive, ""
+        caption = ""
+    if directive is not None:
+        day, meal = directive
 
     group = message.media_group_id
     if group is None:
         if error is not None:
             await message.reply_text(error)
+            return
+        if product is not None:
+            await _offer_label([_AlbumPhoto(message, file_id, media_type, "")], *product)
             return
         async with _queue_lock:
             await _process_photo(message, file_id, media_type, day, meal, caption)
@@ -495,6 +558,8 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     album = _albums.setdefault(group, _Album(day=day, meal=meal))
     if directive is not None:
         album.day, album.meal = directive
+    if product is not None:
+        album.product = product
     if error is not None:
         album.error = error
     album.photos.append(_AlbumPhoto(message, file_id, media_type, caption))
@@ -518,11 +583,161 @@ async def _flush_album(group: str) -> None:
         # date is that the photos do not belong to today.
         await album.photos[0].message.reply_text(album.error)
         return
+    if album.product is not None:
+        # One call with every frame: the name is on the pack and the numbers are
+        # on the panel, so the model needs to see them together.
+        await _offer_label(album.photos, *album.product)
+        return
     for photo in album.photos:
         async with _queue_lock:
             await _process_photo(
                 photo.message, photo.file_id, photo.media_type, album.day, album.meal, photo.caption
             )
+
+
+async def _offer_label(photos: list[_AlbumPhoto], name: str | None, brand: str | None) -> None:
+    """Read a product's label off its photos and offer to add it.
+
+    Nothing is written yet. ``food.create`` has no delete and no edit, so a
+    misread milligram would be permanent — the panel is shown first for the same
+    reason `_offer_foods` shows three candidates instead of committing the first
+    hit. This questions the model, not the user.
+
+    :param photos: Every frame of the batch, sent to the model together.
+    :param name: Product name from the caption, overriding the packaging.
+    :param brand: Brand from the caption, same precedence.
+    """
+    message = photos[0].message
+    images = []
+    for photo in photos:
+        data = await _download(photo.message, photo.file_id)
+        store.save_photo(hashlib.sha256(data).hexdigest(), data)
+        images.append((data, photo.media_type))
+
+    try:
+        label = await vision.read_label(images, name, brand)
+    except vision.RecognitionError as exc:
+        await message.reply_text(f"Couldn't read that label: {exc}")
+        return
+
+    label_id = uuid.uuid4().hex[:16]
+    _pending_labels[label_id] = label
+    store.append_log("label_read", {"label_id": label_id, **label.model_dump()})
+    await message.reply_text(
+        f"Read this label:\n\n{_label_summary(label)}\n\nAdd it? This can't be undone.",
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("Add", callback_data=f"add:{label_id}"),
+                    InlineKeyboardButton("Discard", callback_data=f"drop:{label_id}"),
+                ]
+            ]
+        ),
+    )
+
+
+async def _add_food(query: CallbackQuery, label_id: str) -> None:
+    """Create the confirmed food and teach the alias for it.
+
+    Logs nothing: the photos were of a package and its panel, not of a portion
+    on a scale, so there is no weight to record. The next scale photo of it logs
+    with no interaction, which is the whole point.
+
+    :param query: The callback to answer with the outcome.
+    :param label_id: Key of the panel awaiting confirmation.
+    """
+    label = _pending_labels.pop(label_id, None)
+    if label is None:
+        await query.edit_message_text("That label is gone — send the photos again.")
+        return
+
+    grams = match.serving_grams(label)
+    try:
+        food_id = await fatsecret.create_food(
+            name=label.name,
+            brand=label.brand or "Generic",
+            serving_description=label.serving_description,
+            nutrients=match.label_nutrients(label),
+            serving_amount=grams if grams is not None else label.serving_amount,
+            serving_unit="g" if grams is not None else (label.serving_unit or "g"),
+        )
+        food = await fatsecret.get_food(food_id)
+    except fatsecret.FatSecretError as exc:
+        await query.edit_message_text(f"Couldn't create that food: {exc}")
+        return
+    store.append_log("created_food", {"food_id": food_id, "name": label.name})
+
+    try:
+        serving, _units = match.pick_serving(food, grams or 100.0)
+    except match.NoGramServingError:
+        # A drink measured in millilitres, most often. The food is real and
+        # usable in FatSecret; it just cannot be logged off a gram reading.
+        await query.edit_message_text(
+            f"Added {food.name}.\nIts serving is a volume, so I can't log it from a scale weight."
+        )
+        return
+
+    aliases = store.load_aliases()
+    aliases[match.normalize(label.name)] = Alias(
+        food_id=food.food_id,
+        food_name=food.name,
+        serving_id=serving.serving_id,
+        serving_grams=match.grams_per_unit(serving),
+    )
+    store.save_aliases(aliases)
+    await query.edit_message_text(
+        f"Added {food.name}.\nPhotograph it on the scale and it'll log itself."
+    )
+
+
+def _label_summary(label: NutritionLabel) -> str:
+    """Render everything read off a label, so a misread is visible before it sticks.
+
+    Anything derived from a percentage is marked as such: that is the figure most
+    worth a second look, being both rounded on the label and converted here.
+
+    :param label: The transcribed panel.
+    :returns: Several lines — identity, serving, macros, then the rest.
+    """
+    head = label.name + (f" · {label.brand}" if label.brand else "")
+    grams = match.serving_grams(label)
+    serving = label.serving_description
+    if grams is not None:
+        serving += f" ({grams:g} g)"
+    elif label.serving_amount is not None:
+        serving += f" ({label.serving_amount:g} {label.serving_unit})"
+
+    nutrients = match.label_nutrients(label)
+    rest = []
+    for nutrient, value in nutrients.items():
+        if nutrient in ("calories", "fat", "carbohydrate", "protein"):
+            continue  # already in the macro line
+        shown = (
+            f"{_NUTRIENT_LABELS.get(nutrient, nutrient)} {value:g}{match.NUTRIENT_UNITS[nutrient]}"
+        )
+        if nutrient in label.percent_daily_value and getattr(label, nutrient) is None:
+            shown += f" (from {label.percent_daily_value[nutrient]:g}% DV)"
+        rest.append(shown)
+
+    lines = [
+        head,
+        serving,
+        _macro_line(label.calories, label.fat, label.carbohydrate, label.protein),
+    ]
+    lines += [" · ".join(rest[i : i + 3]) for i in range(0, len(rest), 3)]
+    return "\n".join(lines)
+
+
+async def _download(message: Message, file_id: str) -> bytes:
+    """Fetch one photo's bytes from Telegram.
+
+    :param message: Any message from the same chat, used for its bot handle.
+    :param file_id: Telegram file id to download.
+    :returns: The image bytes, never resized — the scale's LCD and a label's
+        small print are both destroyed by downsampling.
+    """
+    telegram_file = await message.get_bot().get_file(file_id)
+    return bytes(await telegram_file.download_as_bytearray())
 
 
 async def _process_photo(
@@ -542,8 +757,7 @@ async def _process_photo(
     :param meal: FatSecret meal to file them under.
     :param caption: Correction text to apply, empty when there is none.
     """
-    telegram_file = await message.get_bot().get_file(file_id)
-    image_bytes = bytes(await telegram_file.download_as_bytearray())
+    image_bytes = await _download(message, file_id)
     digest = hashlib.sha256(image_bytes).hexdigest()
     store.save_photo(digest, image_bytes)
 
@@ -705,6 +919,17 @@ async def on_backlog(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.reply_text(BACKLOG_USAGE)
 
 
+async def on_new(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Answer a bare ``/new`` typed as a message rather than a photo caption.
+
+    :param update: Incoming ``/new`` command.
+    :param _context: Unused handler context.
+    """
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(NEW_USAGE)
+
+
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     """List items awaiting review, each with approve and discard buttons.
 
@@ -741,6 +966,15 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     # so narrow it once here rather than at each use.
     origin = query.message if isinstance(query.message, Message) else None
     action, item_id, *extra = query.data.split(":")
+    # A pending label is not a queued item, so these have to be routed before the
+    # queue lookup below, which would answer "That item is gone".
+    if action == "add":
+        await _add_food(query, item_id)
+        return
+    if action == "drop":
+        _pending_labels.pop(item_id, None)
+        await query.edit_message_text("Discarded.")
+        return
     async with _queue_lock:
         await _apply_button(query, origin, action, item_id, extra)
 
@@ -908,6 +1142,7 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     owner = filters.User(user_id=_owner_id())
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("backlog", on_backlog, filters=owner))
+    app.add_handler(CommandHandler("new", on_new, filters=owner))
     app.add_handler(CommandHandler("pending", on_pending, filters=owner))
     app.add_handler(CommandHandler("today", on_today, filters=owner))
     app.add_handler(CommandHandler("undo", on_undo, filters=owner))

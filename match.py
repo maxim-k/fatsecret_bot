@@ -11,7 +11,7 @@ import re
 from datetime import time
 from typing import Final
 
-from models import Alias, Food, Serving
+from models import Alias, Food, NutritionLabel, Serving
 
 # Collapse any run of whitespace (spaces, tabs, newlines) to a single space so
 # "eggs", " eggs", "eggs " and "eggs  " all normalize identically.
@@ -169,6 +169,115 @@ def pick_serving(food: Food, grams: float) -> tuple[Serving, float]:
 # The only four values FatSecret accepts. Anything else comes back as an
 # opaque API error, so a meal named by hand is checked against this first.
 MEALS: Final = frozenset({"breakfast", "lunch", "dinner", "other"})
+
+# FDA Daily Values for adults and children 4+, as published at
+# fda.gov/food/nutrition-facts-label (content current 2024-03-05) and set by
+# 21 CFR 101.9. Units deliberately match both the label and FatSecret's
+# food.create fields, so a percentage resolves with one multiplication and no
+# unit conversion anywhere in between.
+#
+# Total sugar is absent on purpose: the 50 g Daily Value is for *added* sugars,
+# while FatSecret's `sugar` field means total. Deriving one from the other would
+# understate any product whose sugar is mostly intrinsic, and labels print total
+# sugars in grams regardless, so there is nothing to derive.
+DAILY_VALUES: Final[dict[str, float]] = {
+    "fat": 78.0,  # g
+    "saturated_fat": 20.0,  # g
+    "carbohydrate": 275.0,  # g
+    "fiber": 28.0,  # g
+    "protein": 50.0,  # g
+    "cholesterol": 300.0,  # mg
+    "sodium": 2300.0,  # mg
+    "potassium": 4700.0,  # mg
+    "calcium": 1300.0,  # mg
+    "iron": 18.0,  # mg
+    "vitamin_c": 90.0,  # mg
+    "vitamin_a": 900.0,  # mcg RAE
+    "vitamin_d": 20.0,  # mcg
+}
+
+# The unit each nutrient is measured in, matching both the label and
+# FatSecret's food.create fields. Kept beside DAILY_VALUES so the two cannot
+# disagree about whether calcium is milligrams.
+NUTRIENT_UNITS: Final[dict[str, str]] = {
+    "fat": "g",
+    "saturated_fat": "g",
+    "polyunsaturated_fat": "g",
+    "monounsaturated_fat": "g",
+    "trans_fat": "g",
+    "carbohydrate": "g",
+    "fiber": "g",
+    "sugar": "g",
+    "protein": "g",
+    "cholesterol": "mg",
+    "sodium": "mg",
+    "potassium": "mg",
+    "calcium": "mg",
+    "iron": "mg",
+    "vitamin_c": "mg",
+    "vitamin_a": "mcg",
+    "vitamin_d": "mcg",
+}
+
+# One ounce in grams. Labels on imported goods sometimes give only ounces, and
+# FatSecret would take "oz" directly, but everything downstream — the alias's
+# serving_grams, the plausible-weight band, the scale itself — is in grams.
+GRAMS_PER_OUNCE: Final = 28.349523125
+
+
+def label_nutrients(label: NutritionLabel) -> dict[str, float]:
+    """Flatten a label's panel into FatSecret's nutrient parameters.
+
+    A printed amount always beats a percentage: label percentages are rounded to
+    the nearest whole number, so 2% of the iron DV could be anything from 0.27
+    to 0.45 mg, while the milligram figure beside it is exact.
+
+    :param label: The panel as read from the product's photos.
+    :returns: Nutrient name to value, omitting anything the label did not give
+        in either form. Values are per serving.
+    """
+    values: dict[str, float | None] = {
+        # Required by food.create.v2, and absent from DAILY_VALUES because the
+        # 2,000 kcal reference is a diet, not a per-serving figure to derive.
+        "calories": label.calories,
+        "fat": label.fat,
+        "carbohydrate": label.carbohydrate,
+        "protein": label.protein,
+        "saturated_fat": label.saturated_fat,
+        "polyunsaturated_fat": label.polyunsaturated_fat,
+        "monounsaturated_fat": label.monounsaturated_fat,
+        "trans_fat": label.trans_fat,
+        "cholesterol": label.cholesterol,
+        "sodium": label.sodium,
+        "potassium": label.potassium,
+        "fiber": label.fiber,
+        "sugar": label.sugar,
+        "vitamin_d": label.vitamin_d,
+        "vitamin_a": label.vitamin_a,
+        "vitamin_c": label.vitamin_c,
+        "calcium": label.calcium,
+        "iron": label.iron,
+    }
+    for nutrient, percent in label.percent_daily_value.items():
+        daily = DAILY_VALUES.get(nutrient)
+        if daily is not None and values.get(nutrient) is None:
+            values[nutrient] = daily * percent / 100.0
+    return {name: value for name, value in values.items() if value is not None}
+
+
+def serving_grams(label: NutritionLabel) -> float | None:
+    """Convert a label's serving quantity to grams.
+
+    :param label: The panel as read from the product's photos.
+    :returns: The serving in grams, or ``None`` when the label gave no quantity
+        or gave it in millilitres — a volume is not a weight, and treating one
+        as the other misreports everything that is not water.
+    """
+    if label.serving_amount is None or label.serving_unit == "ml":
+        return None
+    if label.serving_unit == "oz":
+        return label.serving_amount * GRAMS_PER_OUNCE
+    return label.serving_amount
 
 
 def meal_for(when: time) -> str:

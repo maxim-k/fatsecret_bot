@@ -426,3 +426,32 @@ def test_diary_entry_without_macros_reads_as_zero() -> None:
     assert bot._macro_line(entry.calories, entry.fat, entry.carbs, entry.protein).startswith(
         "Calories: 0kcal"
     )
+
+
+# --- /new directive parsing -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("caption", "name", "brand"),
+    [
+        ("/new", None, None),
+        ("/new Super protein bar 23 g, SuperCompany", "Super protein bar 23 g", "SuperCompany"),
+        ("/new Fiber One 10 g Fiber", "Fiber One 10 g Fiber", None),
+        ("/new  Oat Milk ,  Oatly  ", "Oat Milk", "Oatly"),
+        ("/NEW Bar, Brand", "Bar", "Brand"),
+    ],
+)
+def test_parse_new(caption: str, name: str | None, brand: str | None) -> None:
+    assert bot.parse_new(caption) == (name, brand)
+
+
+def test_new_keeps_a_trailing_weight_in_the_product_name() -> None:
+    # parse_correction would strip "23 g" off as a weight. Product names sell
+    # their macros in the title now, and that number is part of the name.
+    assert bot.parse_correction("Super protein bar 23 g")[1] == 23.0
+    assert bot.parse_new("/new Super protein bar 23 g") == ("Super protein bar 23 g", None)
+
+
+@pytest.mark.parametrize("caption", ["Avocado", "56", "/backlog 15/08/2026 lunch", "", "news"])
+def test_parse_new_ignores_everything_else(caption: str) -> None:
+    assert bot.parse_new(caption) is None
