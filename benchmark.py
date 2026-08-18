@@ -73,9 +73,8 @@ def load_cases() -> list[Case]:
     photo_of = {q["id"]: q["photo_sha256"] for q in queue}
 
     submitted: dict[str, list[float]] = collections.defaultdict(list)
-    corrected: dict[str, float] = {}
+    corrected: set[str] = set()
     product: dict[str, str] = {}
-    pending: dict[str, float] = {}
     for line in (store._data_dir() / "log.jsonl").read_text().splitlines():
         event = json.loads(line)
         payload, kind = event.get("payload", {}), event.get("event")
@@ -87,23 +86,17 @@ def load_cases() -> list[Case]:
             product.setdefault(digest, payload["product"])
         elif kind == "submitted":
             submitted[digest].append(payload["grams"])
-            pending[item] = payload["grams"]
         elif kind == "corrected":
-            # The next submission for this item is the weight the user typed.
-            pending.pop(item, None)
-            corrected[digest] = 0.0
-
-    # A resubmission after a "corrected" event is the user's own number.
-    for digest in list(corrected):
-        if submitted[digest]:
-            corrected[digest] = submitted[digest][-1]
+            # Whatever is submitted for this photo next is the weight the user
+            # typed, which is the closest thing to ground truth there is.
+            corrected.add(digest)
 
     cases = []
     for path in sorted((store._data_dir() / "photos").iterdir()):
         digest = path.stem
         weights = submitted.get(digest, [])
-        if corrected.get(digest):
-            expected: float | None = corrected[digest]
+        if digest in corrected and weights:
+            expected: float | None = weights[-1]
         elif weights and len(set(weights)) == 1:
             expected = weights[0]
         else:

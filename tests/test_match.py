@@ -8,7 +8,6 @@ from match import (
     DAILY_VALUES,
     NoGramServingError,
     grams_per_unit,
-    is_outlier,
     label_nutrients,
     lookup,
     meal_for,
@@ -276,38 +275,16 @@ def test_meal_for_time_of_day() -> None:
     assert meal_for(time(5, 59)) == "other"
 
 
-def test_is_outlier_catches_a_trailing_zero_misread() -> None:
-    # 56 g of bread read as 560 g: the failure this exists for.
-    assert is_outlier(560.0, [56.0])
-    assert not is_outlier(56.0, [56.0])
-
-
-def test_is_outlier_allows_a_wide_but_real_history() -> None:
-    # Tomatoes genuinely span 25-188 g; the band widens with the spread.
-    tomatoes = [25.0, 40.0, 60.0, 90.0, 188.0]
-    assert not is_outlier(30.0, tomatoes)
-    assert not is_outlier(180.0, tomatoes)
-    assert is_outlier(900.0, tomatoes)
-
-
 def test_plausible_range_widens_when_evidence_is_thin() -> None:
     # Under five samples the margin doubles: mango logged twice at 145 and 188 g
     # must not make a real 289 g portion look like a misread.
     assert match_plausible([100.0, 200.0]) == (50.0, 400.0)
     assert match_plausible([100.0] * 5 + [200.0]) == (75.0, 250.0)
-    # Always logged at 190 g still leaves room for ordinary variation.
-    assert not is_outlier(200.0, [190.0] * 5)
-    assert is_outlier(1900.0, [190.0] * 5)
-
-
-def test_is_outlier_allows_ordinary_variation() -> None:
-    eggs = [120.0, 124.0, 124.0, 135.0]
-    assert not is_outlier(117.0, eggs)
-    assert is_outlier(1170.0, eggs)
-
-
-def test_is_outlier_passes_everything_with_no_history() -> None:
-    assert not is_outlier(999.0, [])
+    # Always logged at 190 g still leaves room for ordinary variation, but not
+    # for a trailing zero. This is the band bot._hold_reason questions against.
+    low, high = match_plausible([190.0] * 5) or (0.0, 0.0)
+    assert low <= 200.0 <= high
+    assert not low <= 1900.0 <= high
 
 
 def test_lookup_falls_back_to_token_containment() -> None:

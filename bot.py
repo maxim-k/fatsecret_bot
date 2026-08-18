@@ -44,11 +44,6 @@ log = logging.getLogger(__name__)
 # the same thing in the field that matters, and _hold_reason checks both.
 UNREADABLE: Final = 0.0
 
-# Below this, the reading is worth a second look. The score is too noisy to
-# interrupt the user over, but good enough to decide where to spend one more
-# request — and the retry carries a hint the first pass never had.
-SHAKY: Final = 0.5
-
 # Telegram sends an album as one update per photo and attaches the caption to
 # the single message it was typed on, so a /backlog directive naming a date
 # reaches one photo out of ten. The group is collected instead and processed
@@ -87,23 +82,12 @@ class _Album:
 
 _albums: dict[str, _Album] = {}
 
-# Display names for the nutrients shown back before a food is created. The units
-# and the values themselves live in match; this is only how they are spelled.
+# Only the names that do not fall out of _nutrient_label's default: the fats are
+# abbreviated to keep the panel readable on a phone.
 _NUTRIENT_LABELS: Final[dict[str, str]] = {
     "saturated_fat": "Sat fat",
     "polyunsaturated_fat": "Poly fat",
     "monounsaturated_fat": "Mono fat",
-    "trans_fat": "Trans fat",
-    "cholesterol": "Cholesterol",
-    "sodium": "Sodium",
-    "potassium": "Potassium",
-    "fiber": "Fiber",
-    "sugar": "Sugar",
-    "vitamin_d": "Vitamin D",
-    "vitamin_a": "Vitamin A",
-    "vitamin_c": "Vitamin C",
-    "calcium": "Calcium",
-    "iron": "Iron",
 }
 
 # A panel read but not yet created, waiting on a tap. food.create has no delete
@@ -191,39 +175,6 @@ async def _submit(queued: QueuedItem, *, record: bool = True, replaces: float | 
     return f"Logged {alias.food_name} — {queued.item.weight_g:g} g"
 
 
-def _reread_hint(queued: QueuedItem) -> str | None:
-    """Build an instruction for a second look, or ``None`` if none would help.
-
-    Fires when the fast model's answer is doubtful: the weight contradicts the
-    food's own history, the reading contradicts its own transcription, or the
-    model graded itself low. A new food is skipped — there is nothing to compare
-    against, and the picker is about to ask anyway.
-
-    :param queued: The item the first pass produced.
-    :returns: Text to append to the retry prompt, or ``None``.
-    """
-    if queued.alias is None:
-        return None
-    if queued.item.confidence < SHAKY:
-        return (
-            "A previous read of this photo could not settle the weight. Read the "
-            "display again, reporting only the large seven-segment digits and "
-            "ignoring unit labels and status marks beside them."
-        )
-    bounds = match.plausible_range(queued.alias.weights)
-    if bounds is None or bounds[0] <= queued.item.weight_g <= bounds[1]:
-        return None
-    return (
-        f"A previous read of this photo reported {queued.item.weight_g:g} g for "
-        f"{queued.alias.food_name!r}. That food normally weighs between "
-        f"{bounds[0]:.0f} and {bounds[1]:.0f} g, so the earlier reading is very "
-        "likely wrong. The usual cause is a status indicator on the display "
-        "being counted as a digit, most often as a trailing zero. Read only the "
-        "large seven-segment characters and report what they actually show. If "
-        "the display really does read the earlier value, say so and keep it."
-    )
-
-
 def _hold_reason(queued: QueuedItem) -> str | None:
     """Decide whether this item needs a human before it is logged.
 
@@ -265,6 +216,19 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
         item=item,
         alias=match.lookup(item.product, store.load_aliases()),
     )
+
+
+def _nutrient_label(nutrient: str) -> str:
+    """Spell a nutrient's field name for display.
+
+    :param nutrient: Field name, e.g. ``"vitamin_d"``.
+    :returns: Display name, e.g. ``"Vitamin D"``.
+    """
+    if nutrient in _NUTRIENT_LABELS:
+        return _NUTRIENT_LABELS[nutrient]
+    words = nutrient.replace("_", " ")
+    # A trailing single letter is a vitamin's letter and stays capital.
+    return words.capitalize() if len(words.rsplit(" ", 1)[-1]) > 1 else words.title()
 
 
 def _macro_line(calories: float, fat: float, carbs: float, protein: float) -> str:
@@ -481,33 +445,6 @@ def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
             ]
         ]
     )
-
-
-async def _reread(
-    image_bytes: bytes,
-    media_type: str,
-    recent: list[str],
-    hint: str,
-    queued: QueuedItem,
-) -> RecognizedItem | None:
-    """Look at the same photo once more, with a hint the first pass lacked.
-
-    :param image_bytes: The original photo, unmodified.
-    :param media_type: Its MIME type.
-    :param recent: The same reuse candidates the first pass got.
-    :param hint: Why the first reading looks wrong.
-    :param queued: The item being rechecked, used to match the retry's answer.
-    :returns: The re-read item, or ``None`` if the retry failed or came back
-        describing something else.
-    """
-    try:
-        second = await vision.recognize(image_bytes, media_type, recent, hint=hint)
-    except vision.RecognitionError:
-        return None  # the first reading still stands and will be held
-    # A multi-item plate can come back in a different order, so match on the name
-    # rather than assuming the retry answers in the same sequence.
-    key = match.normalize(queued.item.product)
-    return next((i for i in second.items if match.normalize(i.product) == key), None)
 
 
 async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -735,9 +672,7 @@ def _label_summary(label: NutritionLabel) -> str:
     for nutrient, value in match.label_nutrients(label).items():
         if nutrient in ("calories", "fat", "carbohydrate", "protein"):
             continue  # already in the macro line
-        shown = (
-            f"{_NUTRIENT_LABELS.get(nutrient, nutrient)} {value:g}{match.NUTRIENT_UNITS[nutrient]}"
-        )
+        shown = f"{_nutrient_label(nutrient)} {value:g}{match.NUTRIENT_UNITS[nutrient]}"
         percent = derived.get(nutrient)
         if percent is not None:
             shown += f" (from {percent:g}% DV)"
@@ -809,38 +744,15 @@ async def _process_photo(
         if caption:
             _apply_correction(queued, caption)
 
-        # One re-read, never a loop: a hint that fails to settle the reading is
-        # not going to settle it on the third try either.
-        note = ""
-        hint = _reread_hint(queued)
-        if hint is not None:
-            first = queued.item.weight_g
-            retried = await _reread(image_bytes, media_type, recent, hint, queued)
-            if retried is not None:
-                store.append_log(
-                    "reread",
-                    {
-                        "item_id": queued.id,
-                        "first": first,
-                        "second": retried.weight_g,
-                        "model": vision.model_id(),
-                    },
-                )
-                queued.item = retried
-                if _hold_reason(queued) is None:
-                    note = f" (re-read; first pass said {first:g} g)"
-                else:
-                    note = f" First pass said {first:g} g."
-
         hold = _hold_reason(queued)
         if hold is None:
             try:
-                logged.append((queued, await _submit(queued) + note))
+                logged.append((queued, await _submit(queued)))
                 queued.state = ItemState.SUBMITTED
             except fatsecret.FatSecretError as exc:
                 held.append((queued, f"FatSecret error: {exc}"))
         else:
-            held.append((queued, f"{hold}{note}"))
+            held.append((queued, hold))
         queue.append(queued)
 
     # One message per logged item: a reply has to resolve to exactly one thing,
@@ -928,30 +840,22 @@ async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
     store.save_queue(queue)
 
 
-async def on_backlog(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a bare ``/backlog`` typed as a message rather than a caption.
+async def on_usage(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Answer a caption directive typed as a bare message.
 
-    The directive only does anything attached to photos, and Telegram routes
-    captions to the photo handler, never to a command handler. Without this the
-    command would match nothing and look broken.
+    ``/backlog`` and ``/new`` only do anything attached to photos, and Telegram
+    routes captions to the photo handler, never to a command handler. Without
+    this the commands would match nothing and look broken.
 
-    :param update: Incoming ``/backlog`` command.
+    :param update: Incoming ``/backlog`` or ``/new`` command.
     :param _context: Unused handler context.
     """
     message = update.effective_message
-    if message is not None:
-        await message.reply_text(BACKLOG_USAGE)
-
-
-async def on_new(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a bare ``/new`` typed as a message rather than a photo caption.
-
-    :param update: Incoming ``/new`` command.
-    :param _context: Unused handler context.
-    """
-    message = update.effective_message
-    if message is not None:
-        await message.reply_text(NEW_USAGE)
+    if message is None or message.text is None:
+        return
+    await message.reply_text(
+        NEW_USAGE if message.text.split()[0].lower().startswith("/new") else BACKLOG_USAGE
+    )
 
 
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1165,8 +1069,7 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     """
     owner = filters.User(user_id=_owner_id())
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("backlog", on_backlog, filters=owner))
-    app.add_handler(CommandHandler("new", on_new, filters=owner))
+    app.add_handler(CommandHandler(["backlog", "new"], on_usage, filters=owner))
     app.add_handler(CommandHandler("pending", on_pending, filters=owner))
     app.add_handler(CommandHandler("today", on_today, filters=owner))
     app.add_handler(CommandHandler("undo", on_undo, filters=owner))

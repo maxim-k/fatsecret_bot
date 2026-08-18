@@ -87,7 +87,7 @@ def _percent_encode(value: str) -> str:
     return quote(str(value), safe="~")
 
 
-def signature_base_string(method: str, url: str, params: dict[str, str]) -> str:
+def _signature_base_string(method: str, url: str, params: dict[str, str]) -> str:
     """Build the OAuth1 signature base string per RFC 5849 section 3.4.1.
 
     Parameters are sorted by their percent-encoded key/value before joining,
@@ -125,7 +125,7 @@ def _sign(
     :param token_secret: The token secret; empty during the request-token step.
     :returns: Base64-encoded signature.
     """
-    base_string = signature_base_string(method, url, params)
+    base_string = _signature_base_string(method, url, params)
     signing_key = f"{_percent_encode(consumer_secret)}&{_percent_encode(token_secret)}"
     digest = hmac.new(signing_key.encode(), base_string.encode(), hashlib.sha1).digest()
     return b64encode(digest).decode()

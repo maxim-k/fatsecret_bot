@@ -13,12 +13,12 @@ from fatsecret import (
     FatSecretError,
     _as_list,
     _num,
+    _signature_base_string,
     create_entry,
     delete_entry,
     get_food,
     list_diary,
     search_foods,
-    signature_base_string,
 )
 from models import to_epoch_days
 
@@ -49,17 +49,17 @@ def _query_params(request: httpx.Request) -> dict[str, str]:
 # --- signature base string --------------------------------------------
 
 
-def test_signature_base_string_sorted_and_encoded() -> None:
+def test__signature_base_string_sorted_and_encoded() -> None:
     # Deliberately out of alphabetical order and containing characters (":",
     # "/", "=", "&") that must be percent-encoded, to catch both the sorting
     # and the encoding halves of RFC 5849 section 3.4.1 at once.
     params = {"b": "2", "a": "1", "oauth_nonce": "abc123"}
-    base = signature_base_string("get", "https://example.com/resource", params)
+    base = _signature_base_string("get", "https://example.com/resource", params)
     assert base == ("GET&https%3A%2F%2Fexample.com%2Fresource&a%3D1%26b%3D2%26oauth_nonce%3Dabc123")
 
 
-def test_signature_base_string_encodes_reserved_chars_in_values() -> None:
-    base = signature_base_string("POST", "https://example.com/r", {"q": "hello world/x+y"})
+def test__signature_base_string_encodes_reserved_chars_in_values() -> None:
+    base = _signature_base_string("POST", "https://example.com/r", {"q": "hello world/x+y"})
     # The param string is percent-encoded once to build "q=...", then the
     # whole base string is percent-encoded again per RFC 5849 3.4.1.1 — so a
     # space ends up "%2520" (%20 re-encoded), not "%20" or "+". Space must

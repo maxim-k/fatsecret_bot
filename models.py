@@ -7,7 +7,7 @@ changed independently; a shared contract is what keeps them composable.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
@@ -160,7 +160,6 @@ class Alias(BaseModel):
     serving_id: int
     serving_grams: float = Field(gt=0)
     hits: int = 0
-    last_used: datetime | None = None
     # Past logged weights for this food. A trailing zero misread off the scale
     # produces a number nothing like any portion the user has ever eaten.
     weights: list[float] = Field(default_factory=list)

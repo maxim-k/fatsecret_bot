@@ -314,17 +314,3 @@ def plausible_range(history: list[float]) -> tuple[float, float] | None:
     # twice at 145 and 188 g must not make a real 289 g portion an anomaly.
     low, high = (0.5, 2.0) if len(history) < 5 else (0.75, 1.25)
     return min(history) * low, max(history) * high
-
-
-def is_outlier(grams: float, history: list[float]) -> bool:
-    """Judge whether a weight falls outside what this food normally weighs.
-
-    Being asked about a good reading costs one tap; logging a bad one costs
-    silent wrong data, so this errs towards asking.
-
-    :param grams: The newly read weight.
-    :param history: Weights previously logged for this food.
-    :returns: ``True`` if the weight should be questioned rather than logged.
-    """
-    bounds = plausible_range(history)
-    return bounds is not None and not bounds[0] <= grams <= bounds[1]

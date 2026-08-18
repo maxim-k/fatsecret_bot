@@ -80,7 +80,7 @@ Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weig
 
 **Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the panel is read and offered for one tap before anything is written. Name it yourself with `/new Super protein bar 23 g, SuperCompany` — everything before the last comma is the name, so a product that sells its macros in the title keeps them. Percentages are converted to amounts from the FDA daily values, ounces to grams. Nothing is logged: the next scale photo of it does that by itself.
 
-A known food is logged immediately. A new one shows the top three FatSecret matches with their macros — tap one and it's logged and remembered. A weight unlike anything you've logged for that food is re-read once, then held.
+A known food is logged immediately. A new one shows the top three FatSecret matches with their macros — tap one and it's logged and remembered. A weight unlike anything you've logged for that food is held for you to confirm.
 
 Reply to any held item: a number fixes the weight, a name fixes the food.
 

@@ -99,45 +99,6 @@ def test_concurrent_updates_stays_at_one() -> None:
     assert ApplicationBuilder().token("1:x").build().concurrent_updates == 1
 
 
-def test_reread_hint_only_for_a_weight_outside_the_band() -> None:
-    alias = _alias()
-    alias.weights = [56.0]
-    inband = QueuedItem(
-        id="a" * 32,
-        photo_sha256="x",
-        day=date(2026, 8, 15),
-        item=_item(weight_g=56.0),
-        alias=alias,
-    )
-    assert bot._reread_hint(inband) is None
-
-    outlier = QueuedItem(
-        id="b" * 32,
-        photo_sha256="x",
-        day=date(2026, 8, 15),
-        item=_item(weight_g=560.0),
-        alias=alias,
-    )
-    hint = bot._reread_hint(outlier)
-    assert hint is not None
-    assert "560" in hint
-    assert "trailing zero" in hint
-
-
-def test_reread_hint_absent_without_alias_or_history() -> None:
-    no_alias = QueuedItem(id="c" * 32, photo_sha256="x", day=date(2026, 8, 15), item=_item())
-    assert bot._reread_hint(no_alias) is None
-
-    no_history = QueuedItem(
-        id="d" * 32,
-        photo_sha256="x",
-        day=date(2026, 8, 15),
-        item=_item(weight_g=999.0),
-        alias=_alias(),
-    )
-    assert bot._reread_hint(no_history) is None
-
-
 def test_hold_reason_clears_once_the_weight_is_back_in_band() -> None:
     alias = _alias()
     alias.weights = [56.0]
@@ -225,31 +186,6 @@ def test_submit_replaces_a_corrected_weight_instead_of_stacking() -> None:
     weights = store.load_aliases()["eggs"].weights
     corrected = [w for w in weights if w != 108.0] + [queued.item.weight_g]
     assert corrected == [120.0, 118.0]
-
-
-def test_escalation_fires_on_a_shaky_reading() -> None:
-    alias = _alias()
-    alias.weights = [120.0, 124.0]
-    shaky = QueuedItem(
-        id="g" * 32,
-        photo_sha256="x",
-        day=date(2026, 8, 15),
-        item=_item(weight_g=122.0, confidence=0.3),
-        alias=alias,
-    )
-    assert bot._reread_hint(shaky) is not None
-
-    confident = QueuedItem(
-        id="h" * 32,
-        photo_sha256="x",
-        day=date(2026, 8, 15),
-        item=_item(weight_g=122.0, confidence=0.9),
-        alias=alias,
-    )
-    assert bot._reread_hint(confident) is None
-
-
-# --- /backlog directive parsing -------------------------------------------------
 
 
 def test_backlog_parses_a_full_date_and_meal() -> None:
