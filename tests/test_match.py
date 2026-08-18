@@ -20,7 +20,7 @@ from match import (
 from match import (
     plausible_range as match_plausible,
 )
-from models import Alias, Food, NutritionLabel, Serving
+from models import Alias, Food, NutrientReading, NutritionLabel, Serving
 
 # --- normalize -----------------------------------------------------------
 
@@ -349,8 +349,13 @@ def _label(**kwargs: object) -> NutritionLabel:
     return NutritionLabel(**{**base, **kwargs})  # type: ignore[arg-type]
 
 
+def _readings(**kwargs: float) -> list[NutrientReading]:
+    """Nutrients the label gave only as a percentage."""
+    return [NutrientReading(nutrient=n, percent_daily_value=p) for n, p in kwargs.items()]
+
+
 def test_percent_daily_value_becomes_an_absolute_amount() -> None:
-    label = _label(percent_daily_value={"calcium": 10, "iron": 15, "vitamin_d": 20})
+    label = _label(nutrients=_readings(calcium=10, iron=15, vitamin_d=20))
     nutrients = label_nutrients(label)
     assert nutrients["calcium"] == pytest.approx(130.0)  # 10% of 1300 mg
     assert nutrients["iron"] == pytest.approx(2.7)  # 15% of 18 mg
@@ -360,12 +365,14 @@ def test_percent_daily_value_becomes_an_absolute_amount() -> None:
 def test_a_printed_amount_beats_a_percentage() -> None:
     # Label percentages are rounded to whole numbers; the milligrams beside
     # them are not, so the exact figure has to win.
-    label = _label(calcium=137.0, percent_daily_value={"calcium": 10})
+    label = _label(
+        nutrients=[NutrientReading(nutrient="calcium", amount=137.0, percent_daily_value=10)]
+    )
     assert label_nutrients(label)["calcium"] == 137.0
 
 
 def test_unknown_percent_keys_are_dropped_not_guessed() -> None:
-    label = _label(percent_daily_value={"magnesium": 20, "riboflavin": 15})
+    label = _label(nutrients=_readings(magnesium=20, riboflavin=15))
     nutrients = label_nutrients(label)
     assert "magnesium" not in nutrients
     assert "riboflavin" not in nutrients
@@ -374,7 +381,7 @@ def test_unknown_percent_keys_are_dropped_not_guessed() -> None:
 def test_total_sugar_is_never_derived_from_a_percentage() -> None:
     # The 50 g Daily Value is for *added* sugars; FatSecret's field is total.
     assert "sugar" not in DAILY_VALUES
-    assert "sugar" not in label_nutrients(_label(percent_daily_value={"sugar": 40}))
+    assert "sugar" not in label_nutrients(_label(nutrients=_readings(sugar=40)))
 
 
 def test_unstated_nutrients_are_omitted_rather_than_zeroed() -> None:
@@ -382,7 +389,8 @@ def test_unstated_nutrients_are_omitted_rather_than_zeroed() -> None:
     # as zero and must not be sent as one.
     nutrients = label_nutrients(_label())
     assert set(nutrients) == {"calories", "fat", "carbohydrate", "protein"}
-    assert label_nutrients(_label(trans_fat=0.0))["trans_fat"] == 0.0
+    zeroed = _label(nutrients=[NutrientReading(nutrient="trans_fat", amount=0.0)])
+    assert label_nutrients(zeroed)["trans_fat"] == 0.0
 
 
 def test_serving_in_ounces_converts_to_grams() -> None:
@@ -419,3 +427,13 @@ def test_every_required_create_parameter_is_present() -> None:
     nutrients = label_nutrients(_label())
     for required in ("calories", "fat", "carbohydrate", "protein"):
         assert required in nutrients, required
+
+
+def test_serving_unit_it_does_not_recognise_is_not_assumed_to_be_grams() -> None:
+    # serving_unit is a plain string now, so the model can put anything there.
+    # Guessing grams would misreport the food; "not a weight" is recoverable.
+    assert serving_grams(_label(serving_amount=250.0, serving_unit="fl oz")) is None
+    assert serving_grams(_label(serving_amount=100.0, serving_unit="")) is None
+    # Spelling and case still resolve.
+    assert serving_grams(_label(serving_amount=50.0, serving_unit="  Grams ")) == 50.0
+    assert serving_grams(_label(serving_amount=1.0, serving_unit="OZ")) == pytest.approx(28.3495)

@@ -1,4 +1,4 @@
-"""Photo -> structured food items via Claude vision.
+"""Photo -> structured food items via Gemini vision.
 
 The user photographs food sitting on kitchen scales, with the scale's LCD in
 frame, and forwards the photo to the bot. This module turns that image into
@@ -11,39 +11,47 @@ reading as auditable rather than trusted at face value.
 
 from __future__ import annotations
 
-import base64
 import os
 import re
-from typing import Final, Literal, cast
+from typing import Final
 
 import pydantic
-from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam
+from google import genai
+from google.genai import types
 
 from models import NutritionLabel, Recognition, RecognizedItem
 
-# Haiku reads a photo in 2-4 s against Sonnet's 6-12 s, but misread this user's
-# egg display three times out of three. So Haiku runs first and Sonnet is spent
-# only on a reading the bot already doubts — see bot._reread. Both measured from
-# log.jsonl; data/photos/ keeps the corpus to re-measure against.
-_DEFAULT_MODEL: Final = "claude-haiku-4-5"
-_ESCALATION_MODEL: Final = "claude-sonnet-5"
+# One model for every photo. The previous pairing ran Haiku on everything and
+# escalated to Sonnet on doubt, which bought both of its failure modes at once:
+# fast and wrong, or accurate, slow and expensive.
+#
+# Chosen by measurement, not by tier: against the 17-photo corpus this read 9 of
+# 9 known weights correctly at a 4.7 s median, including every trailing-zero
+# case that Haiku got wrong (64 not 640, 108 not 1080, 379 not 3790).
+# gemini-3.5-flash-lite managed 4 of 11 and repeated exactly those mistakes, and
+# 3.6/3.7-flash answered 503 on every attempt. Override with GEMINI_MODEL and
+# re-run benchmark.py before believing a different one is better.
+_DEFAULT_MODEL: Final = "gemini-3.5-flash"
+
+# Enough for a multi-item plate or a full nutrition panel, and low enough that a
+# runaway generation fails fast instead of billing for it.
+_MAX_OUTPUT_TOKENS: Final = 2048
+
+# Transcribing four digits off an LCD is not a reasoning problem. Leaving the
+# budget automatic tripled the median latency (4.7 s to 13 s) without reading
+# anything better, and thinking tokens count against _MAX_OUTPUT_TOKENS, so one
+# photo came back truncated with finish_reason=MAX_TOKENS and no answer at all.
+# Note gemini-3.5-flash-lite rejects a zero budget outright with a bare 400.
+_THINKING: Final = types.ThinkingConfig(thinking_budget=0)
 
 
-def escalation_model() -> str:
-    """Return the slower, more accurate model used for a second look.
+def model_id() -> str:
+    """Return the vision model every request uses.
 
-    :returns: Model id to re-read a doubtful photo with.
+    :returns: Model id from ``GEMINI_MODEL``, or the default.
     """
-    return os.environ.get("ANTHROPIC_ESCALATION_MODEL", _ESCALATION_MODEL)
+    return os.environ.get("GEMINI_MODEL", _DEFAULT_MODEL)
 
-
-# Matches anthropic.types.base64_image_source_param.Base64ImageSourceParam's
-# media_type field. Kept as a separate alias (rather than importing the SDK's
-# internal type) so the public recognize() signature can stay a plain `str` —
-# Telegram always reports one of these four for a photo, so the cast below is
-# trusted input, not a weakening of the contract.
-_ImageMediaType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 _SYSTEM_PROMPT: Final = """\
 You are reading a photograph of food sitting on a kitchen scale, taken by a \
@@ -93,14 +101,13 @@ sharp, straight-on reading of an unambiguous display warrants a high \
 confidence; anything that required guessing does not.
 
 When you cannot read the display at all:
-weight_g must always be a positive number, so there is no way to report \
-"unknown" in that field. When no display is visible or its digits are \
-illegible, put your best estimate in weight_g, put whatever you can make \
-out (or an empty string) in raw_digits, and set confidence to 0.0. A \
-confidence of 0.0 is the agreed signal that the weight was not actually \
-read and must not be trusted — the entry will be held back for the user to \
-correct by hand rather than logged. Never quietly present an estimate as a \
-reading by giving it a normal confidence.
+Report weight_g as 0 and confidence as 0.0, and put whatever you can make \
+out (or an empty string) in raw_digits. A weight of 0 is the agreed way to \
+say "no weight was read": the entry is held back for the user to fill in by \
+hand rather than logged. Use it whenever there is no scale in the frame, the \
+display is out of shot, or the digits are illegible. Never guess a plausible \
+weight to fill the field — an estimate presented as a reading is the one \
+outcome worse than no reading.
 
 Multiple items:
 A single photo may show several distinct foods sharing the scale, or one \
@@ -150,25 +157,29 @@ serving size, and only one of them is the whole package.
 
 Nutrition values:
 Every value is PER SERVING, exactly as the panel lists it, never per 100 g \
-unless the panel's serving is 100 g, and never per package. Use the panel's \
-own units: grams for fat, carbohydrate, protein, fiber, sugar and the fat \
-breakdown; milligrams for cholesterol, sodium, potassium, calcium, iron and \
-vitamin C; micrograms for vitamin D and vitamin A. Transcribe the number \
-printed; do not compute, round, or reconcile values that look inconsistent.
+unless the panel's serving is 100 g, and never per package. Transcribe the \
+number printed; do not compute, round, or reconcile values that look \
+inconsistent.
+
+Calories, fat, carbohydrate and protein have their own fields. Every other \
+nutrient goes in the `nutrients` list, one entry each, where `nutrient` must \
+be exactly one of:
+  saturated_fat, polyunsaturated_fat, monounsaturated_fat, trans_fat,
+  cholesterol, sodium, potassium, fiber, sugar,
+  vitamin_d, vitamin_a, vitamin_c, calcium, iron
+Use the panel's own units: grams for the fats, fiber and sugar; milligrams \
+for cholesterol, sodium, potassium, calcium, iron and vitamin C; micrograms \
+for vitamin D and vitamin A. A nutrient the panel does not mention is simply \
+left out of the list — do not add an entry with a zero, and do not invent a \
+plausible value. Zero means the label printed a zero.
 
 Percentages are not amounts:
 Panels print "%DV" beside many nutrients, and older ones print a percentage \
-INSTEAD of an amount. Never put a percentage in a nutrient field — 10% \
-calcium is not 10 mg. When the panel gives an actual amount, use it. When it \
-gives only a percentage, leave that nutrient's field unset and put the number \
-in `percent_daily_value` keyed by the same field name, e.g. \
-{"calcium": 10, "iron": 15}. The percentage is converted to an amount \
-afterwards from a fixed reference table, so report it as the percentage it is.
-
-When a nutrient is simply absent from the panel, leave it unset. Do not infer \
-a plausible value, and do not enter zero for something the label does not \
-mention — an unset field means "not stated", while zero means the label \
-printed a zero.
+INSTEAD of an amount. Never report a percentage as an amount — 10% calcium is \
+not 10 mg. Each entry has both `amount` and `percent_daily_value`: fill in \
+whichever the panel gives, or both when it gives both. When only a percentage \
+is printed, leave `amount` unset — it is converted afterwards from a fixed \
+reference table, so report the percentage as the percentage it is.
 
 If the panel is unreadable in the photos, say so rather than reconstructing \
 a plausible one from the product's name.
@@ -185,29 +196,78 @@ class RecognitionError(Exception):
     """
 
 
-_client: AsyncAnthropic | None = None
+_client: genai.Client | None = None
 
 
-def _get_client() -> AsyncAnthropic:
-    """Return the module-level Anthropic client, creating it on first use.
+def _get_client() -> genai.Client:
+    """Return the module-level Gemini client, creating it on first use.
 
     Lazy construction means importing this module never requires
-    ``ANTHROPIC_API_KEY`` to be set (useful in tests that never call
+    ``GEMINI_API_KEY`` to be set (useful in tests that never call
     :func:`recognize`), and reusing one client across calls keeps the
     underlying HTTP connection pool warm instead of rebuilding it per photo.
     Tests monkeypatch this function to inject a fake client, so
     :func:`recognize` never has to accept a client parameter of its own.
 
-    :returns: The shared :class:`AsyncAnthropic` client.
+    :returns: The shared :class:`genai.Client`. Requests go through its
+        ``.aio`` namespace: a sync HTTP call inside python-telegram-bot's async
+        handlers would block the whole bot's event loop while one photo is read.
     """
     global _client
     if _client is None:
-        # AsyncAnthropic, not the sync client: recognize() runs inside
-        # python-telegram-bot's async handlers, and a sync HTTP call there
-        # would block the whole bot's event loop for every other user's
-        # update while one photo is being read.
-        _client = AsyncAnthropic()
+        _client = genai.Client()
     return _client
+
+
+async def _generate[T: pydantic.BaseModel](
+    parts: list[types.Part | str],
+    system_prompt: str,
+    schema: type[T],
+    thinking: types.ThinkingConfig | None = None,
+) -> T:
+    """Send one request and return its validated structured output.
+
+    :param parts: Request content — image parts and prompt text, in order.
+    :param system_prompt: Instructions that do not vary per request.
+    :param schema: Pydantic model the response must satisfy.
+    :param thinking: Override the thinking budget. Only benchmark.py sets it;
+        production uses the module default.
+    :returns: The parsed response.
+    :raises RecognitionError: If the model returned nothing parseable, or its
+        output failed schema validation.
+    """
+    try:
+        response = await _get_client().aio.models.generate_content(
+            model=model_id(),
+            contents=parts,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                response_mime_type="application/json",
+                response_schema=schema,
+                max_output_tokens=_MAX_OUTPUT_TOKENS,
+                # No tools are passed, so the SDK's automatic function calling
+                # has nothing to do but warn on every single call.
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                thinking_config=thinking or _THINKING,
+            ),
+        )
+        # Unlike the Anthropic SDK, validation happens when .parsed is read, so
+        # the access belongs inside the try rather than after it.
+        parsed = response.parsed
+    except pydantic.ValidationError as exc:
+        raise RecognitionError(f"model response failed schema validation: {exc}") from exc
+    except genai.errors.APIError as exc:
+        # Transient 503s under load are routine. The caller already treats a
+        # RecognitionError as "tell the user and keep the photo", which is the
+        # right handling here too.
+        raise RecognitionError(f"vision API error: {exc}") from exc
+
+    if not isinstance(parsed, schema):
+        # A refusal or a truncated generation leaves .parsed as None rather than
+        # raising; finish_reason says which.
+        finish = response.candidates[0].finish_reason if response.candidates else None
+        raise RecognitionError(f"model returned no parseable output (finish_reason={finish!r})")
+    return parsed
 
 
 async def recognize(
@@ -215,7 +275,6 @@ async def recognize(
     media_type: str,
     recent_foods: list[str],
     hint: str | None = None,
-    model: str | None = None,
 ) -> Recognition:
     """Turn one scale photo into structured, weight-verified food items.
 
@@ -232,15 +291,13 @@ async def recognize(
         duplicate.
     :param hint: Extra instruction for a second look at the same photo, telling
         the model what the first pass returned and why it looks wrong. Only ever
-        set on a retry.
-    :param model: Override the model for this call, used to escalate a doubtful
-        reading to a stronger one.
+        set on a retry — and the retry's value is the hint, not a bigger model.
     :returns: The items recognized on the scale, each with its own weight
-        reading and confidence.
+        reading and confidence. A ``weight_g`` of zero means no weight could be
+        read, which is a held item rather than an error.
     :raises RecognitionError: If the model returned no parseable text
         content, or its content failed schema validation.
     """
-    client = _get_client()
     candidates = "\n".join(f"- {food}" for food in recent_foods)
     user_prompt = (
         "Identify every distinct food item on the scale in this photo and "
@@ -255,46 +312,19 @@ async def recognize(
     )
     if hint:
         user_prompt = f"{user_prompt}\n\n{hint}"
-    image_b64 = base64.standard_b64encode(image_bytes).decode("ascii")
 
-    messages: list[MessageParam] = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": cast("_ImageMediaType", media_type),
-                        "data": image_b64,
-                    },
-                },
-                {"type": "text", "text": user_prompt},
-            ],
-        }
-    ]
-
-    try:
-        response = await client.messages.parse(
-            model=model or os.environ.get("ANTHROPIC_MODEL", _DEFAULT_MODEL),
-            max_tokens=2048,
-            system=_SYSTEM_PROMPT,
-            messages=messages,
-            output_format=Recognition,
-        )
-    except pydantic.ValidationError as exc:
-        raise RecognitionError(f"model response failed schema validation: {exc}") from exc
-
-    if response.parsed_output is None:
-        raise RecognitionError(
-            f"model returned no parseable text content (stop_reason={response.stop_reason!r})"
-        )
-    for item in response.parsed_output.items:
-        if not _digits_agree(item):
+    recognition = await _generate(
+        [types.Part.from_bytes(data=image_bytes, mime_type=media_type), user_prompt],
+        _SYSTEM_PROMPT,
+        Recognition,
+    )
+    for item in recognition.items:
+        if item.weight_g and not _digits_agree(item):
             # The model transcribed one number and reported another; that is not
-            # a reading, and the user gets asked rather than told.
+            # a reading, and the user gets asked rather than told. A zero weight
+            # is already an explicit "no reading" and needs no second opinion.
             item.confidence = 0.0
-    return response.parsed_output
+    return recognition
 
 
 async def read_label(
@@ -303,10 +333,6 @@ async def read_label(
     brand: str | None = None,
 ) -> NutritionLabel:
     """Read a product's nutrition panel from one or more photos.
-
-    Always uses the stronger model. A panel is dense small print read once in a
-    product's lifetime, so the seconds Haiku would save are worth nothing
-    against a misread milligram that then repeats in every future entry.
 
     :param images: ``(bytes, media_type)`` for each photo, typically the pack
         front and the panel. All are sent in one request so the model can take
@@ -320,7 +346,6 @@ async def read_label(
     """
     if not images:
         raise RecognitionError("no photos to read a label from")
-    client = _get_client()
 
     told = ""
     if name:
@@ -333,40 +358,11 @@ async def read_label(
             "contain, rather than what the packaging shows."
         )
 
-    content: list[dict[str, object]] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": cast("_ImageMediaType", media_type),
-                "data": base64.standard_b64encode(data).decode("ascii"),
-            },
-        }
-        for data, media_type in images
+    parts: list[types.Part | str] = [
+        types.Part.from_bytes(data=data, mime_type=media_type) for data, media_type in images
     ]
-    content.append(
-        {
-            "type": "text",
-            "text": "Read this product's name, brand and Nutrition Facts panel." + told,
-        }
-    )
-
-    try:
-        response = await client.messages.parse(
-            model=escalation_model(),
-            max_tokens=2048,
-            system=_LABEL_PROMPT,
-            messages=[cast("MessageParam", {"role": "user", "content": content})],
-            output_format=NutritionLabel,
-        )
-    except pydantic.ValidationError as exc:
-        raise RecognitionError(f"label response failed schema validation: {exc}") from exc
-
-    if response.parsed_output is None:
-        raise RecognitionError(
-            f"model returned no parseable label (stop_reason={response.stop_reason!r})"
-        )
-    return response.parsed_output
+    parts.append("Read this product's name, brand and Nutrition Facts panel." + told)
+    return await _generate(parts, _LABEL_PROMPT, NutritionLabel)
 
 
 def _digits_agree(item: RecognizedItem) -> bool:

@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -39,12 +40,13 @@ log = logging.getLogger(__name__)
 # The model reports 0.0 when it could not actually read the display (see
 # vision._SYSTEM_PROMPT), and vision._digits_agree forces the same value when a
 # reading contradicts its own transcription. Nothing between 0 and 1 is worth
-# gating on: a self-graded 0.75 held two correct readings.
+# gating on: a self-graded 0.75 held two correct readings. A weight_g of 0 says
+# the same thing in the field that matters, and _hold_reason checks both.
 UNREADABLE: Final = 0.0
 
-# Below this, Haiku's reading is worth a second opinion from the slower model.
-# The score is too noisy to interrupt the user over, but good enough to decide
-# where to spend eight more seconds.
+# Below this, the reading is worth a second look. The score is too noisy to
+# interrupt the user over, but good enough to decide where to spend one more
+# request — and the retry carries a hint the first pass never had.
 SHAKY: Final = 0.5
 
 # Telegram sends an album as one update per photo and attaches the caption to
@@ -76,6 +78,10 @@ class _Album:
     # Set by a /new caption: the batch is a product to add, not food to log.
     product: tuple[str | None, str | None] | None = None
     error: str | None = None
+    # Extended by every frame that arrives. The flush waits for it to pass
+    # rather than being cancelled and re-created, which dropped the coroutine
+    # unrun ("never awaited") and could split one batch across two flushes.
+    deadline: float = 0.0
     task: asyncio.Task[None] | None = None
 
 
@@ -229,10 +235,13 @@ def _hold_reason(queued: QueuedItem) -> str | None:
     :param queued: The freshly recognised item.
     :returns: A short reason to show the user, or ``None`` to log it now.
     """
+    # No weight comes first, ahead of the unknown-food check: a photo with no
+    # scale in it is usually also a food the bot has never seen, and answering
+    # "New food." would open the picker offering to log it at 0 g.
+    if queued.item.weight_g == 0 or queued.item.confidence <= UNREADABLE:
+        return "Couldn't read a weight."
     if queued.alias is None:
         return "New food."
-    if queued.item.confidence <= UNREADABLE:
-        return "Couldn't read the display."
     bounds = match.plausible_range(queued.alias.weights)
     if bounds is not None and not bounds[0] <= queued.item.weight_g <= bounds[1]:
         return f"Unusual weight — expected {bounds[0]:.0f}-{bounds[1]:.0f} g."
@@ -481,7 +490,7 @@ async def _reread(
     hint: str,
     queued: QueuedItem,
 ) -> RecognizedItem | None:
-    """Ask the stronger model to look at the same photo once more.
+    """Look at the same photo once more, with a hint the first pass lacked.
 
     :param image_bytes: The original photo, unmodified.
     :param media_type: Its MIME type.
@@ -492,9 +501,7 @@ async def _reread(
         describing something else.
     """
     try:
-        second = await vision.recognize(
-            image_bytes, media_type, recent, hint=hint, model=vision.escalation_model()
-        )
+        second = await vision.recognize(image_bytes, media_type, recent, hint=hint)
     except vision.RecognitionError:
         return None  # the first reading still stands and will be held
     # A multi-item plate can come back in a different order, so match on the name
@@ -563,9 +570,9 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if error is not None:
         album.error = error
     album.photos.append(_AlbumPhoto(message, file_id, media_type, caption))
-    if album.task is not None:
-        album.task.cancel()
-    album.task = context.application.create_task(_flush_album(group), update=update)
+    album.deadline = time.monotonic() + _ALBUM_SETTLE
+    if album.task is None:  # one task per group, never cancelled
+        album.task = context.application.create_task(_flush_album(group), update=update)
 
 
 async def _flush_album(group: str) -> None:
@@ -573,7 +580,16 @@ async def _flush_album(group: str) -> None:
 
     :param group: Telegram ``media_group_id`` of the batch.
     """
-    await asyncio.sleep(_ALBUM_SETTLE)
+    while True:
+        album = _albums.get(group)
+        if album is None:
+            return
+        remaining = album.deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        # Every new frame pushes the deadline out, so this re-sleeps rather
+        # than firing on a batch that is still arriving.
+        await asyncio.sleep(remaining)
     album = _albums.pop(group, None)
     if album is None or not album.photos:
         return
@@ -707,16 +723,24 @@ def _label_summary(label: NutritionLabel) -> str:
     elif label.serving_amount is not None:
         serving += f" ({label.serving_amount:g} {label.serving_unit})"
 
-    nutrients = match.label_nutrients(label)
+    # Which readings arrived only as a percentage, so the summary can say so —
+    # those are the figures most worth a second look, being rounded on the label
+    # and converted here.
+    derived = {
+        r.nutrient: r.percent_daily_value
+        for r in label.nutrients
+        if r.amount is None and r.percent_daily_value is not None
+    }
     rest = []
-    for nutrient, value in nutrients.items():
+    for nutrient, value in match.label_nutrients(label).items():
         if nutrient in ("calories", "fat", "carbohydrate", "protein"):
             continue  # already in the macro line
         shown = (
             f"{_NUTRIENT_LABELS.get(nutrient, nutrient)} {value:g}{match.NUTRIENT_UNITS[nutrient]}"
         )
-        if nutrient in label.percent_daily_value and getattr(label, nutrient) is None:
-            shown += f" (from {label.percent_daily_value[nutrient]:g}% DV)"
+        percent = derived.get(nutrient)
+        if percent is not None:
+            shown += f" (from {percent:g}% DV)"
         rest.append(shown)
 
     lines = [
@@ -799,7 +823,7 @@ async def _process_photo(
                         "item_id": queued.id,
                         "first": first,
                         "second": retried.weight_g,
-                        "model": vision.escalation_model(),
+                        "model": vision.model_id(),
                     },
                 )
                 queued.item = retried

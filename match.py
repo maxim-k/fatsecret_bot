@@ -236,48 +236,44 @@ def label_nutrients(label: NutritionLabel) -> dict[str, float]:
     :returns: Nutrient name to value, omitting anything the label did not give
         in either form. Values are per serving.
     """
-    values: dict[str, float | None] = {
+    values: dict[str, float] = {
         # Required by food.create.v2, and absent from DAILY_VALUES because the
         # 2,000 kcal reference is a diet, not a per-serving figure to derive.
         "calories": label.calories,
         "fat": label.fat,
         "carbohydrate": label.carbohydrate,
         "protein": label.protein,
-        "saturated_fat": label.saturated_fat,
-        "polyunsaturated_fat": label.polyunsaturated_fat,
-        "monounsaturated_fat": label.monounsaturated_fat,
-        "trans_fat": label.trans_fat,
-        "cholesterol": label.cholesterol,
-        "sodium": label.sodium,
-        "potassium": label.potassium,
-        "fiber": label.fiber,
-        "sugar": label.sugar,
-        "vitamin_d": label.vitamin_d,
-        "vitamin_a": label.vitamin_a,
-        "vitamin_c": label.vitamin_c,
-        "calcium": label.calcium,
-        "iron": label.iron,
     }
-    for nutrient, percent in label.percent_daily_value.items():
-        daily = DAILY_VALUES.get(nutrient)
-        if daily is not None and values.get(nutrient) is None:
-            values[nutrient] = daily * percent / 100.0
-    return {name: value for name, value in values.items() if value is not None}
+    for reading in label.nutrients:
+        if reading.nutrient not in NUTRIENT_UNITS or reading.nutrient in values:
+            continue  # not a field FatSecret takes, or already read off the macros
+        if reading.amount is not None:
+            values[reading.nutrient] = reading.amount
+        elif reading.percent_daily_value is not None:
+            daily = DAILY_VALUES.get(reading.nutrient)
+            if daily is not None:
+                values[reading.nutrient] = daily * reading.percent_daily_value / 100.0
+    return values
 
 
 def serving_grams(label: NutritionLabel) -> float | None:
     """Convert a label's serving quantity to grams.
 
     :param label: The panel as read from the product's photos.
-    :returns: The serving in grams, or ``None`` when the label gave no quantity
-        or gave it in millilitres — a volume is not a weight, and treating one
-        as the other misreports everything that is not water.
+    :returns: The serving in grams, or ``None`` when the label gave no
+        quantity, gave it in millilitres, or gave a unit not recognised here.
+        A volume is not a weight, and treating one as the other misreports
+        everything that is not water — so an unfamiliar unit falls back to "not
+        a weight" rather than being assumed to be grams.
     """
-    if label.serving_amount is None or label.serving_unit == "ml":
+    if label.serving_amount is None or label.serving_unit is None:
         return None
-    if label.serving_unit == "oz":
+    unit = label.serving_unit.strip().lower()
+    if unit in ("g", "gram", "grams"):
+        return label.serving_amount
+    if unit in ("oz", "ounce", "ounces"):
         return label.serving_amount * GRAMS_PER_OUNCE
-    return label.serving_amount
+    return None
 
 
 def meal_for(when: time) -> str:

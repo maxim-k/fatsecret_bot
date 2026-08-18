@@ -11,7 +11,7 @@ So the design goal isn't "make typing faster", it's **a food you've eaten before
 ## How it works
 
 ```
-photo → Claude reads product + weight → known food? → FatSecret diary
+photo → Gemini reads product + weight → known food? → FatSecret diary
                                              │
                                           new food → held for one tap
 ```
@@ -39,9 +39,9 @@ photo → Claude reads product + weight → known food? → FatSecret diary
 
 Message [@BotFather](https://t.me/BotFather), send `/newbot`, and keep the token. Get your own numeric user id from [@userinfobot](https://t.me/userinfobot) — the bot ignores everyone else.
 
-### 3. Anthropic
+### 3. Gemini
 
-Create an API key at [console.anthropic.com](https://console.anthropic.com). This bills separately from any Claude subscription.
+Create an API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). There is a free tier.
 
 ### 4. Configure
 
@@ -111,7 +111,9 @@ uv run mypy *.py         # strict type check
 uv run pytest -q         # tests
 ```
 
-Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
+Tests never touch the real Gemini or FatSecret APIs — both are stubbed.
+
+`benchmark.py` does hit the real API: it replays every photo in `data/photos/` through a list of candidate models and scores them against the weights already in your diary. Run it before changing `GEMINI_MODEL`.
 
 `docker build --target dev` gives an image with the dev tooling included.
 
@@ -122,7 +124,7 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 | `models.py` | Shared types every module exchanges |
 | `store.py` | JSON persistence with atomic writes, plus the audit log |
 | `match.py` | Alias lookup and the gram→serving-units maths |
-| `vision.py` | Photo → structured items, via Claude |
+| `vision.py` | Photo → structured items, via Gemini |
 | `fatsecret.py` | OAuth1 client, food lookup, diary read/write, `authorize` CLI |
 | `bot.py` | Telegram handlers and orchestration |
 
@@ -133,4 +135,4 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 
 - **A created food can't be deleted or edited.** FatSecret has no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
 - **`/new` needs a Premier tier.** On the free Basic edition `food.create` returns `error 10, Unknown method`.
-- The model defaults to `claude-haiku-4-5` on cost grounds. If it misreads scale digits, set `ANTHROPIC_MODEL=claude-sonnet-5` — check the `raw_digits` field on your first batch of real photos before deciding.
+- One model reads every photo, with thinking disabled. Letting the model think tripled latency without reading anything better, and its thinking tokens count against the output cap, so a photo can come back truncated with no answer.

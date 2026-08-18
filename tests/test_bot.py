@@ -4,11 +4,21 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
 import bot
 import match
 import store
-from models import Alias, DiaryEntry, Food, ItemState, QueuedItem, RecognizedItem
+from models import (
+    Alias,
+    DiaryEntry,
+    Food,
+    ItemState,
+    NutritionLabel,
+    QueuedItem,
+    Recognition,
+    RecognizedItem,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -455,3 +465,61 @@ def test_new_keeps_a_trailing_weight_in_the_product_name() -> None:
 @pytest.mark.parametrize("caption", ["Avocado", "56", "/backlog 15/08/2026 lunch", "", "news"])
 def test_parse_new_ignores_everything_else(caption: str) -> None:
     assert bot.parse_new(caption) is None
+
+
+# --- schemas the providers have to accept ---------------------------------------
+
+
+@pytest.mark.parametrize("schema_model", [Recognition, NutritionLabel])
+def test_response_schemas_stay_within_provider_limits(schema_model: type[BaseModel]) -> None:
+    """Guard the two constraints that actually broke /new in production.
+
+    Every test mocked the client, so the request was never built and a schema
+    the API refuses outright looked fine all the way to the user. Anthropic caps
+    a schema at 16 union-typed parameters and Gemini is unreliable on open-ended
+    maps; both are checkable offline, against the schema itself.
+    """
+    schema = schema_model.model_json_schema()
+    blocks = [schema, *schema.get("$defs", {}).values()]
+
+    unions = [
+        f"{block.get('title', '?')}.{name}"
+        for block in blocks
+        for name, prop in block.get("properties", {}).items()
+        if "anyOf" in prop or isinstance(prop.get("type"), list)
+    ]
+    assert len(unions) <= 16, f"too many nullable fields to send: {unions}"
+
+    maps = [
+        f"{block.get('title', '?')}.{name}"
+        for block in blocks
+        for name, prop in block.get("properties", {}).items()
+        if prop.get("type") == "object" and "additionalProperties" in prop
+    ]
+    assert not maps, f"open-ended maps do not convert reliably: {maps}"
+
+
+def test_a_zero_weight_is_held_rather_than_rejected() -> None:
+    # A nutrition-label photo sent as food. weight_g used to be gt=0, so this
+    # raised inside recognize() and the item vanished with no way to correct it.
+    unread = QueuedItem(
+        id="i" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 17),
+        item=RecognizedItem(product="protein bar", weight_g=0, raw_digits="", confidence=0.0),
+    )
+    assert bot._hold_reason(unread) == "Couldn't read a weight."
+
+
+def test_no_weight_outranks_new_food() -> None:
+    # Both are true for a label photo, and answering "New food." would open the
+    # picker offering to log the product at 0 g.
+    store.save_aliases({})
+    unread = QueuedItem(
+        id="j" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 17),
+        item=RecognizedItem(product="dragonfruit", weight_g=0, raw_digits="", confidence=0.9),
+    )
+    assert unread.alias is None
+    assert bot._hold_reason(unread) == "Couldn't read a weight."
