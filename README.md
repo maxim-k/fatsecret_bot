@@ -4,9 +4,9 @@ Photograph your food on kitchen scales, forward it to a Telegram chat, forget ab
 
 ## Why
 
-Logging food by hand is slow — search, type, repeat for every item. Slow means deferred, deferred becomes a backlog, and a backlog becomes nothing logged at all.
+Logging food by hand is slow—search, type, repeat for every item. Slow means deferred, deferred becomes a backlog, and a backlog becomes nothing logged at all.
 
-So the design goal isn't "make typing faster", it's **a food you've eaten before takes zero interaction**. The first time you eat something you teach the bot what it is; every photo of it after that logs itself.
+So the design goal isn't "make typing faster," it's **a food you've eaten before takes zero interaction**. The first time you eat something you teach the bot what it is; every photo of it after that logs itself.
 
 ## How it works
 
@@ -18,14 +18,14 @@ photo → Gemini reads product + weight → known food? → FatSecret diary
 
 ## Setup
 
-### 1. FatSecret
+### Step 1: FatSecret
 
-1. Register at [platform.fatsecret.com/register](https://platform.fatsecret.com/register) — free **Basic** edition, self sign-up, no approval.
+1. Register at [`platform.fatsecret.com/register`](https://platform.fatsecret.com/register)—free **Basic** edition, self sign-up, no approval.
 2. Under **Manage API Keys**, copy the **OAuth 1.0 Consumer Key and Shared Secret**.
 
-   > Not the OAuth 2.0 **Client ID / Client Secret**. FatSecret issues both, and only OAuth 1.0 can reach a user's diary — OAuth 2.0 supports just the `client_credentials` grant, which is app-level food lookups only. Using the wrong pair fails with a bare `400 Invalid signature`.
+   > Not the OAuth 2.0 **Client ID / Client Secret**. FatSecret issues both, and only OAuth 1.0 can reach a user's diary—OAuth 2.0 supports just the `client_credentials` grant, which is app-level food lookups only. Using the wrong pair fails with a bare `400 Invalid signature`.
 
-3. Under **IP Restrictions**, whitelist the machine that will run the bot. Basic allows 15 individual addresses and no CIDR ranges, so add your home IP for development and the VPS IP when you deploy. Auth fails confusingly if you skip this.
+3. Under **IP Restrictions**, whitelist the machine that runs the bot. Basic allows 15 individual addresses and no CIDR ranges, so add your home IP for development and the VPS IP when you deploy. Auth fails confusingly if you skip this.
 4. Get an access token for your own account:
 
    ```bash
@@ -35,21 +35,21 @@ photo → Gemini reads product + weight → known food? → FatSecret diary
    It prints a URL, you approve in a browser, FatSecret shows a PIN, you paste it back, and it prints the token and secret to put in `.env`. No callback server needed.
 
 
-### 2. Telegram
+### Step 2: Telegram
 
-Message [@BotFather](https://t.me/BotFather), send `/newbot`, and keep the token. Get your own numeric user id from [@userinfobot](https://t.me/userinfobot) — the bot ignores everyone else.
+Message [@BotFather](https://t.me/BotFather), send `/newbot`, and keep the token. Get your own numeric user id from [@userinfobot](https://t.me/userinfobot)—the bot ignores everyone else.
 
-### 3. Gemini
+### Step 3: Gemini
 
 Create an API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). There is a free tier.
 
-### 4. Configure
+### Step 4: configure
 
 ```bash
 cp .env.example .env
 ```
 
-Fill it in. `.env` is gitignored — keep it that way.
+Fill it in. `.env` is gitignored—keep it that way.
 
 ## Running
 
@@ -76,11 +76,11 @@ Send the bot a photo of food on the scale, with the display readable in frame.
 
 Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. The caption wins over whatever the model reads.
 
-**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other` — when the photo was sent says nothing about which meal it was. A date it can't read means nothing is logged at all, rather than a batch landing quietly on the wrong day.
+**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`—when the photo was sent says nothing about which meal it was. A date it can't read means nothing is logged at all, rather than a batch landing quietly on the wrong day.
 
-**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the panel is read and offered for one tap before anything is written. Name it yourself with `/new Super protein bar 23 g, SuperCompany` — everything before the last comma is the name, so a product that sells its macros in the title keeps them. Percentages are converted to amounts from the FDA daily values, ounces to grams. Nothing is logged: the next scale photo of it does that by itself.
+**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the panel is read and offered for one tap before anything is written. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. Percentages are converted to amounts from the FDA daily values, ounces to grams. Nothing is logged: the next scale photo of it does that by itself.
 
-A known food is logged immediately. A new one shows the top three FatSecret matches with their macros — tap one and it's logged and remembered. A weight unlike anything you've logged for that food is held for you to confirm.
+A known food is logged immediately. A new one shows the top three FatSecret matches with their macros—tap one and it's logged and remembered. A weight unlike anything you've logged for that food is held for you to confirm.
 
 Reply to any held item: a number fixes the weight, a name fixes the food.
 
@@ -96,7 +96,7 @@ docker run -d --restart unless-stopped \
   fatsecret-bot
 ```
 
-The bot uses long polling, so it needs no inbound port, no TLS certificate and no reverse proxy — outbound connections only.
+The bot uses long polling, so it needs no inbound port, no TLS certificate and no reverse proxy—outbound connections only.
 
 **Mount the data volume** at `/data`. `aliases.json`, `queue.json` and `log.jsonl` live there, and `aliases.json` is everything the bot has learned. Losing it means teaching every food again.
 
@@ -111,7 +111,7 @@ uv run mypy *.py         # strict type check
 uv run pytest -q         # tests
 ```
 
-Tests never touch the real Gemini or FatSecret APIs — both are stubbed.
+Tests never call the real Gemini or FatSecret APIs—both are stubbed.
 
 `benchmark.py` does hit the real API: it replays every photo in `data/photos/` through a list of candidate models and scores them against the weights already in your diary. Run it before changing `GEMINI_MODEL`.
 
@@ -125,7 +125,7 @@ Tests never touch the real Gemini or FatSecret APIs — both are stubbed.
 | `store.py` | JSON persistence with atomic writes, plus the audit log |
 | `match.py` | Alias lookup and the gram→serving-units maths |
 | `vision.py` | Photo → structured items, via Gemini |
-| `fatsecret.py` | OAuth1 client, food lookup, diary read/write, `authorize` CLI |
+| `fatsecret.py` | OAuth1 client, food lookup, diary read/write, `authorize` command |
 | `bot.py` | Telegram handlers and orchestration |
 
 
@@ -135,4 +135,4 @@ Tests never touch the real Gemini or FatSecret APIs — both are stubbed.
 
 - **A created food can't be deleted or edited.** FatSecret has no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
 - **`/new` needs a Premier tier.** On the free Basic edition `food.create` returns `error 10, Unknown method`.
-- One model reads every photo, with thinking disabled. Letting the model think tripled latency without reading anything better, and its thinking tokens count against the output cap, so a photo can come back truncated with no answer.
+- One model reads every photo, with thinking turned off. Letting the model think tripled latency without reading anything better, and its thinking tokens count against the output cap, so a photo can come back truncated with no answer.
