@@ -75,31 +75,17 @@ class FatSecretError(Exception):
 
 
 def _percent_encode(value: str) -> str:
-    """Percent-encode per RFC 3986 / OAuth 1.0 (RFC 5849 section 3.6).
-
-    ``urllib.parse.quote``'s default safe set keeps ``/``, which OAuth1
-    requires to be encoded too, so the safe set must be overridden to empty.
-    Getting this wrong is the single most common OAuth1 signing bug.
-
-    :param value: Raw string to encode.
-    :returns: Percent-encoded string safe for use in a signature base string.
-    """
+    """Percent-encode per RFC 3986 / OAuth 1.0 (RFC 5849 section 3.6)."""
+    # quote() keeps "/" in its default safe set. OAuth1 requires it encoded.
+    # This is the most common OAuth1 signing bug.
     return quote(str(value), safe="~")
 
 
 def _signature_base_string(method: str, url: str, params: dict[str, str]) -> str:
-    """Build the OAuth1 signature base string per RFC 5849 section 3.4.1.
-
-    Parameters are sorted by their percent-encoded key/value before joining,
-    and the whole parameter string is then percent-encoded a second time
-    alongside the method and URL. An unsorted or single-encoded base string
-    produces a signature FatSecret silently rejects.
-
-    :param method: HTTP method, e.g. ``"POST"``.
-    :param url: Base URL without query string.
-    :param params: All OAuth and request parameters to sign, unencoded.
-    :returns: The base string ready to be HMAC-signed.
-    """
+    """Build the OAuth1 signature base string per RFC 5849 section 3.4.1."""
+    # Sort by the encoded key and value, then encode the joined string a second
+    # time. An unsorted or single-encoded base string makes a signature that
+    # FatSecret rejects without saying why.
     encoded_params = sorted(
         (_percent_encode(key), _percent_encode(value)) for key, value in params.items()
     )
@@ -118,12 +104,8 @@ def _sign(
 ) -> str:
     """Compute the HMAC-SHA1 OAuth1 signature for a request.
 
-    :param method: HTTP method, e.g. ``"POST"``.
-    :param url: Base URL without query string.
-    :param params: All OAuth and request parameters to sign, unencoded.
-    :param consumer_secret: The app's consumer secret.
-    :param token_secret: The token secret; empty during the request-token step.
-    :returns: Base64-encoded signature.
+    :param token_secret: Empty during the request-token step, which has no
+        token yet.
     """
     base_string = _signature_base_string(method, url, params)
     signing_key = f"{_percent_encode(consumer_secret)}&{_percent_encode(token_secret)}"
@@ -132,11 +114,9 @@ def _sign(
 
 
 def _oauth_params(consumer_key: str, token: str | None) -> dict[str, str]:
-    """Build the standard OAuth1 parameter set common to every request.
+    """Build the OAuth1 parameters common to every request, minus the signature.
 
-    :param consumer_key: The app's consumer key.
-    :param token: The access/request token, or ``None`` before one exists.
-    :returns: OAuth parameters, excluding the signature itself.
+    :param token: ``None`` before a token exists.
     """
     params = {
         "oauth_consumer_key": consumer_key,
@@ -153,15 +133,9 @@ def _oauth_params(consumer_key: str, token: str | None) -> dict[str, str]:
 def _as_list(value: object) -> list[Any]:
     """Normalise FatSecret's object-or-list inconsistency to always a list.
 
-    FatSecret's JSON translation of its underlying XML collapses a
-    single-child collection to a bare object and only uses a JSON list when
-    there are multiple children; a missing collection is sometimes just
-    absent (``None``). Every caller that walks a nested collection hits
-    this, so it is centralised here rather than repeated ad hoc at each
-    call site.
-
-    :param value: The raw field value: ``None``, a ``dict``, or a ``list``.
-    :returns: Always a list, possibly empty.
+    FatSecret's XML-to-JSON translation returns a bare object for a
+    single-child collection, a list for several, and nothing at all for none.
+    Every caller walking a collection hits this.
     """
     if value is None:
         return []
@@ -171,24 +145,16 @@ def _as_list(value: object) -> list[Any]:
 
 
 def _num(value: object) -> float:
-    """Coerce a FatSecret numeric field to ``float``.
-
-    FatSecret's JSON encodes numbers as strings ("31.50"), a consequence of
-    the same XML-to-JSON translation behind the object-vs-list quirk.
-
-    :param value: The raw field value, typically a ``str``.
-    :returns: The parsed float.
-    """
+    """Coerce a FatSecret numeric field to ``float``."""
+    # Every number arrives as a string ("31.50"), from the same XML-to-JSON
+    # translation behind the object-or-list quirk.
     return float(value)  # type: ignore[arg-type]
 
 
 async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, Any]:
     """Sign and send a request, returning the decoded JSON body.
 
-    :param method: HTTP method, e.g. ``"POST"``, ``"GET"``, ``"DELETE"``.
-    :param url: Full base URL (no query string).
-    :param params: Request parameters, excluding OAuth boilerplate.
-    :returns: Decoded JSON response body.
+    :param params: Request parameters, without the OAuth boilerplate.
     :raises FatSecretError: If the response body contains an ``error`` object.
     """
     global _last_call
@@ -230,9 +196,8 @@ async def _request(method: str, url: str, params: dict[str, str]) -> dict[str, A
 async def search_foods(query: str) -> list[Food]:
     """Search FatSecret's food database by free-text query.
 
-    :param query: Free-text search string, e.g. a product name.
-    :returns: Matching foods, each carrying the search result's macro summary
-        and brand. ``servings`` is empty; call :func:`get_food` for those.
+    :returns: Matches carrying the search result's macro summary and brand.
+        ``servings`` is empty — call :func:`get_food` for those.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     body = await _request(
@@ -254,10 +219,8 @@ async def search_foods(query: str) -> list[Food]:
 
 
 async def get_food(food_id: int) -> Food:
-    """Fetch a single food, including all of its servings.
+    """Fetch a single food, with ``servings`` fully populated.
 
-    :param food_id: FatSecret's numeric food id.
-    :returns: The food with ``servings`` fully populated.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     body = await _request(
@@ -270,11 +233,7 @@ async def get_food(food_id: int) -> Food:
 
 
 def _parse_serving(raw: dict[str, Any]) -> Serving:
-    """Parse one raw serving object into a :class:`models.Serving`.
-
-    :param raw: One element of the ``food.servings.serving`` field.
-    :returns: The parsed serving.
-    """
+    """Parse one element of the ``food.servings.serving`` field."""
     metric_amount = raw.get("metric_serving_amount")
     return Serving(
         serving_id=int(raw["serving_id"]),
@@ -285,10 +244,8 @@ def _parse_serving(raw: dict[str, Any]) -> Serving:
 
 
 async def list_diary(day: date) -> list[DiaryEntry]:
-    """List diary entries logged on a given day.
+    """List diary entries logged on a given day, empty if none.
 
-    :param day: Calendar date to read back.
-    :returns: Entries logged on that day, empty if none.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     # See models.to_epoch_days: FatSecret counts diary days from 1970-01-01
@@ -301,11 +258,9 @@ async def list_diary(day: date) -> list[DiaryEntry]:
 
 
 def _parse_diary_entry(raw: dict[str, Any], day: date) -> DiaryEntry:
-    """Parse one raw diary entry object into a :class:`models.DiaryEntry`.
+    """Parse one element of the ``food_entries.food_entry`` field.
 
-    :param raw: One element of the ``food_entries.food_entry`` field.
-    :param day: The day that was requested; the entries are all from it.
-    :returns: The parsed entry.
+    :param day: The day that was requested. Every entry is from it.
     """
     return DiaryEntry(
         food_entry_id=int(raw["food_entry_id"]),
@@ -337,13 +292,11 @@ async def create_food(
     describing it as brand-only.
 
     :param name: Product name, without the brand.
-    :param brand: Manufacturer name.
     :param serving_description: The serving as the label words it, e.g. "1 bar".
-    :param serving_amount: That serving's measured size, if the label gave one.
-    :param serving_unit: Unit of ``serving_amount`` — ``g``, ``ml`` or ``oz``.
+    :param serving_amount: The serving's measured size, if the label gave one.
+    :param serving_unit: ``g``, ``ml`` or ``oz``.
     :param nutrients: Per-serving values keyed by FatSecret's own parameter
         names, as produced by :func:`match.label_nutrients`.
-    :returns: The new food's id.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     params = {
@@ -371,13 +324,9 @@ async def create_entry(
 ) -> DiaryEntry:
     """Log a food entry to the diary.
 
-    :param food_id: FatSecret's numeric food id.
-    :param name: Display name to store against the entry.
-    :param serving_id: The serving option being logged.
-    :param units: Number of servings, e.g. ``1.5``.
-    :param day: Calendar date to log against.
-    :param meal: Diary section; FatSecret requires one and the bot never splits meals.
-    :returns: The newly created diary entry.
+    :param units: Number of servings, e.g. ``1.5``. See
+        :func:`match.grams_per_unit` — one unit is not always one serving.
+    :param meal: One of :data:`match.MEALS`. FatSecret requires one.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     epoch_day = to_epoch_days(day)  # see models.to_epoch_days
@@ -400,10 +349,8 @@ async def create_entry(
 
 
 async def delete_entry(food_entry_id: int) -> None:
-    """Delete a diary entry.
+    """Delete a diary entry, by an id from :func:`create_entry` or :func:`list_diary`.
 
-    :param food_entry_id: The entry id previously returned by
-        :func:`create_entry` or :func:`list_diary`.
     :raises FatSecretError: If FatSecret returns an error response.
     """
     await _request("DELETE", _DIARY_URL, {"food_entry_id": str(food_entry_id), "format": "json"})

@@ -33,14 +33,11 @@ _METRIC_DESCRIPTION_RE = re.compile(r"^\s*\d+(?:\.\d+)?\s*g\s*$", re.IGNORECASE)
 def grams_per_unit(serving: Serving) -> float:
     """How many grams one ``number_of_units`` step represents.
 
-    FatSecret is not consistent here, and getting it wrong scales an entry by
-    a factor of 100. For a natural-unit serving ("1 slice", 39 g) one unit is
-    one slice, so units are multiples. For a plain metric serving ("100 g")
-    one unit is a single **gram** — logging 2.89 units of the "100 g" mango
-    serving records 2.89 g, not 289 g. Verified against the live API.
-
-    :param serving: The serving an entry will be logged against.
-    :returns: Grams represented by one unit.
+    FatSecret is not consistent here. Getting it wrong scales an entry by 100.
+    For a natural-unit serving ("1 slice", 39 g) one unit is one slice. For a
+    plain metric serving ("100 g") one unit is a single **gram**: 2.89 units of
+    mango's "100 g" serving records 2.89 g, not 289 g. Verified against the
+    live API.
     """
     if _METRIC_DESCRIPTION_RE.match(serving.description):
         return 1.0
@@ -57,16 +54,9 @@ class NoGramServingError(Exception):
 
 
 def normalize(product: str) -> str:
-    """Build a canonical alias key from free-form product text.
-
-    Deliberately dumb: lowercasing, trimming, and whitespace collapsing only.
-    No stemming, fuzzy matching, or translation — those would make alias
-    lookups unpredictable, which defeats the point of an alias cache.
-
-    :param product: Raw product text, e.g. as read from a photo or typed by
-        the user.
-    :returns: Canonical key suitable for use in an alias dict.
-    """
+    """Build a canonical alias key from free-form product text."""
+    # Lowercase, trim, collapse whitespace, nothing else. Stemming or fuzzy
+    # matching would make lookups unpredictable, which defeats an alias cache.
     return _WHITESPACE_RE.sub(" ", product.strip()).lower()
 
 
@@ -82,8 +72,7 @@ def lookup(product: str, aliases: dict[str, Alias]) -> Alias | None:
     Two or more candidates means the text is genuinely ambiguous; that is a
     question for the user, not a coin flip, so it resolves to ``None``.
 
-    :param product: Raw product text to resolve.
-    :param aliases: Known aliases, keyed by :func:`normalize`-d product text.
+    :param aliases: Keyed by :func:`normalize`-d product text.
     :returns: The matching alias, or ``None`` if unknown or ambiguous.
     """
     key = normalize(product)
@@ -95,12 +84,7 @@ def lookup(product: str, aliases: dict[str, Alias]) -> Alias | None:
 
 
 def candidates(key: str, aliases: dict[str, Alias]) -> list[str]:
-    """Alias keys whose tokens subsume, or are subsumed by, ``key``.
-
-    :param key: A :func:`normalize`-d product string.
-    :param aliases: Known aliases.
-    :returns: Matching alias keys, empty if none.
-    """
+    """Alias keys whose tokens subsume, or are subsumed by, a normalized ``key``."""
     wanted = set(key.split())
     if not wanted:
         return []
@@ -114,13 +98,10 @@ def candidates(key: str, aliases: dict[str, Alias]) -> list[str]:
 def units_for(serving_grams: float, grams: float) -> float:
     """Compute how many servings ``grams`` amounts to.
 
-    :param serving_grams: Weight in grams of a single serving. Must be
-        positive.
-    :param grams: Weight actually measured. Must be positive.
-    :returns: ``grams / serving_grams``, rounded to 3 decimal places — far
-        finer than a kitchen scale is accurate to, but enough to keep
-        FatSecret's stored calorie total from drifting off by rounding error.
-    :raises ValueError: If either argument is not a positive number.
+    :returns: The ratio, rounded to 3 decimals. That is far finer than a
+        kitchen scale reads. It keeps FatSecret's stored calorie total from
+        drifting on rounding error.
+    :raises ValueError: If either argument is not positive.
     """
     if serving_grams <= 0:
         raise ValueError(f"serving_grams must be positive, got {serving_grams!r}")
@@ -138,12 +119,9 @@ def pick_serving(food: Food, grams: float) -> tuple[Serving, float]:
     skipped rather than guessed at. Natural-unit servings ("1 bar") have no
     metric weight at all and are skipped for the same reason.
 
-    :param food: Candidate food, as returned by a FatSecret food lookup.
-    :param grams: Weight actually measured on the scale. Must be positive.
-    :returns: The chosen serving together with the ``number_of_units`` to
-        log it at.
-    :raises NoGramServingError: If ``food`` exposes no serving whose
-        ``metric_unit`` is grams with a positive ``metric_amount``.
+    :returns: The chosen serving, with the ``number_of_units`` to log it at.
+    :raises NoGramServingError: If no serving has a gram ``metric_unit`` and a
+        positive ``metric_amount``.
     """
     usable = [
         serving
@@ -232,9 +210,8 @@ def label_nutrients(label: NutritionLabel) -> dict[str, float]:
     the nearest whole number, so 2% of the iron DV could be anything from 0.27
     to 0.45 mg, while the milligram figure beside it is exact.
 
-    :param label: The panel as read from the product's photos.
-    :returns: Nutrient name to value, omitting anything the label did not give
-        in either form. Values are per serving.
+    :returns: Nutrient name to per-serving value. Anything the label gave in
+        neither form is left out.
     """
     values: dict[str, float] = {
         # Required by food.create.v2, and absent from DAILY_VALUES because the
@@ -259,12 +236,10 @@ def label_nutrients(label: NutritionLabel) -> dict[str, float]:
 def serving_grams(label: NutritionLabel) -> float | None:
     """Convert a label's serving quantity to grams.
 
-    :param label: The panel as read from the product's photos.
-    :returns: The serving in grams, or ``None`` when the label gave no
-        quantity, gave it in millilitres, or gave a unit not recognised here.
-        A volume is not a weight, and treating one as the other misreports
-        everything that is not water — so an unfamiliar unit falls back to "not
-        a weight" rather than being assumed to be grams.
+    :returns: The serving in grams. ``None`` when the label gave no quantity,
+        used millilitres, or used a unit not recognised here. A volume is not a
+        weight. Treating one as the other misreports anything that is not
+        water, so an unfamiliar unit is not assumed to be grams.
     """
     # A zero amount means the same as none: the schema cannot forbid it, so it
     # is rejected here.
@@ -279,13 +254,9 @@ def serving_grams(label: NutritionLabel) -> float | None:
 
 
 def meal_for(when: time) -> str:
-    """Map a local time of day onto a FatSecret meal.
+    """Map a local time of day onto one of :data:`MEALS`.
 
-    FatSecret only accepts breakfast, lunch, dinner and other, so the small
-    hours land in "other", which its apps show as Snack.
-
-    :param when: Local time the photo was taken.
-    :returns: One of ``breakfast``, ``lunch``, ``dinner``, ``other``.
+    The small hours land in "other", which FatSecret's apps show as Snack.
     """
     if 6 <= when.hour < 12:
         return "breakfast"
@@ -299,13 +270,11 @@ def meal_for(when: time) -> str:
 def plausible_range(history: list[float]) -> tuple[float, float] | None:
     """Weights this food can be expected to weigh, from what it has weighed.
 
-    The observed range with a quarter's slack at each end. Wide enough that
-    ordinary variation logs without a prompt, tight enough that a trailing zero
-    misread off the scale never does.
+    The observed range with a quarter's slack at each end. That is wide enough
+    to log ordinary variation without a prompt. It is tight enough to catch a
+    trailing zero misread off the scale.
 
-    :param history: Weights previously logged for this food.
-    :returns: Inclusive ``(low, high)`` bounds, or ``None`` if there is no
-        history to judge against.
+    :returns: Inclusive ``(low, high)``, or ``None`` with no history to judge.
     """
     if not history:
         return None

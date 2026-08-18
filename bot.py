@@ -106,7 +106,6 @@ _queue_lock = asyncio.Lock()
 def _owner_id() -> int:
     """Read the single permitted Telegram user id.
 
-    :returns: The owner's numeric Telegram id.
     :raises RuntimeError: If ``TELEGRAM_OWNER_ID`` is unset or not numeric.
     """
     raw = os.environ.get("TELEGRAM_OWNER_ID", "")
@@ -116,11 +115,10 @@ def _owner_id() -> int:
 
 
 def _describe(queued: QueuedItem) -> str:
-    """Render a queued item as a single chat line.
+    """Render a queued item as one chat line.
 
-    :param queued: Item to describe.
-    :returns: Human-readable summary including the raw display transcription,
-        so a misread is visible before the user approves it.
+    Includes the raw display transcription, so a misread is visible before the
+    user approves it.
     """
     item = queued.item
     name = queued.alias.food_name if queued.alias else item.product
@@ -130,14 +128,12 @@ def _describe(queued: QueuedItem) -> str:
 async def _submit(queued: QueuedItem, *, record: bool = True, replaces: float | None = None) -> str:
     """Write one queued item to the FatSecret diary.
 
-    :param queued: Item carrying a resolved alias.
     :param record: Whether to fold this weight into the alias's history. False
-        for a reading that only got through because nothing could check it — a
-        wrong value must not widen the band meant to catch wrong values.
-    :param replaces: A previously recorded weight to drop from the history,
-        set when this submission corrects an earlier one. Without it a misread
-        keeps widening the band that exists to catch misreads.
-    :returns: A chat-ready confirmation line.
+        for a reading nothing could check. A wrong value must not widen the
+        band meant to catch wrong values.
+    :param replaces: A weight to drop from the history, set when this
+        submission corrects an earlier one. Without it a misread keeps widening
+        the band that exists to catch misreads.
     :raises RuntimeError: If the item has no alias resolved yet.
     """
     if queued.alias is None:
@@ -178,12 +174,10 @@ async def _submit(queued: QueuedItem, *, record: bool = True, replaces: float | 
 def _hold_reason(queued: QueuedItem) -> str | None:
     """Decide whether this item needs a human before it is logged.
 
-    Every reason here is a doubt about the model's output or the API's data,
-    never about the user's input. Sending the same photo twice is the user's
-    business; a reading that contradicts itself or is nothing like any portion
-    they have ever eaten is not.
+    Every reason here doubts the model's output or the API's data, never the
+    user's input. Sending the same photo twice is the user's business. A
+    reading unlike any portion they have ever eaten is not.
 
-    :param queued: The freshly recognised item.
     :returns: A short reason to show the user, or ``None`` to log it now.
     """
     # No weight comes first, ahead of the unknown-food check: a photo with no
@@ -219,11 +213,7 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
 
 
 def _nutrient_label(nutrient: str) -> str:
-    """Spell a nutrient's field name for display.
-
-    :param nutrient: Field name, e.g. ``"vitamin_d"``.
-    :returns: Display name, e.g. ``"Vitamin D"``.
-    """
+    """Spell a nutrient's field name for display: ``vitamin_d`` to ``Vitamin D``."""
     if nutrient in _NUTRIENT_LABELS:
         return _NUTRIENT_LABELS[nutrient]
     words = nutrient.replace("_", " ")
@@ -234,16 +224,10 @@ def _nutrient_label(nutrient: str) -> str:
 def _macro_line(calories: float, fat: float, carbs: float, protein: float) -> str:
     """Render macros the way FatSecret's own food descriptions read.
 
-    Deliberately mirrors the summary string `_food_line` shows for a search hit,
-    down to the field order and separators, so the diary and the picker do not
-    look like two different apps. The picker reformats FatSecret's string; this
-    builds the same shape from numbers, because a diary entry has no such string.
-
-    :param calories: Energy in kcal.
-    :param fat: Fat in grams.
-    :param carbs: Carbohydrate in grams.
-    :param protein: Protein in grams.
-    :returns: One line of text.
+    Mirrors the string :func:`_food_line` shows for a search hit, down to the
+    field order and separators, so the diary and the picker do not look like
+    two different apps. The picker reformats FatSecret's own string. This builds
+    the same shape from numbers, because a diary entry has no such string.
     """
     return (
         f"Calories: {calories:.0f}kcal · Fat: {fat:.2f}g · "
@@ -254,10 +238,8 @@ def _macro_line(calories: float, fat: float, carbs: float, protein: float) -> st
 def _food_line(index: int, food: Food, weighable: bool) -> str:
     """Render one search hit as a choosable line.
 
-    :param index: 1-based position, matching the button label.
-    :param food: The candidate, carrying its search-result macro summary.
-    :param weighable: Whether it exposes a gram serving.
-    :returns: Two lines of text.
+    :param index: 1-based, matching the button label.
+    :param weighable: Whether the food exposes a gram serving.
     """
     label = f"{food.name}"
     if food.brand:
@@ -323,7 +305,6 @@ def parse_correction(text: str) -> tuple[str | None, float | None]:
     ``"Avocado"`` names the food, ``"56"`` sets the weight, ``"Avocado 56"``
     does both. Shared by captions and replies so the two cannot drift apart.
 
-    :param text: Raw caption or reply text.
     :returns: ``(name, weight)``, either of which may be ``None``.
     """
     cleaned = text.strip().replace(",", ".")
@@ -351,13 +332,11 @@ _BACKLOG_DATE_FORMAT: Final = "%d/%m/%Y"
 def parse_backlog(caption: str) -> tuple[date, str] | None:
     """Read a ``/backlog`` directive out of a photo caption.
 
-    :param caption: Raw caption text.
-    :returns: ``(day, meal)`` for a backlog directive, or ``None`` when the
-        caption is an ordinary correction and belongs to
-        :func:`parse_correction` instead.
-    :raises ValueError: If the directive is present but its date or meal cannot
-        be understood. Refusing beats defaulting to today, which would file a
-        week of food against the wrong day without saying so.
+    :returns: ``(day, meal)``, or ``None`` when the caption is an ordinary
+        correction and belongs to :func:`parse_correction` instead.
+    :raises ValueError: If the directive is present but its date or meal make
+        no sense. Refusing beats defaulting to today, which would file a week
+        of food against the wrong day without saying so.
     """
     words = caption.strip().split()
     if not words or words[0].lower() != "/backlog":
@@ -398,10 +377,9 @@ def parse_new(caption: str) -> tuple[str | None, str | None] | None:
     10 g Fiber" would become "Fiber One" weighing 10 grams. Everything before
     the last comma is the name, digits included.
 
-    :param caption: Raw caption text.
-    :returns: ``(name, brand)``, either of which may be ``None`` when the
-        caption was a bare ``/new`` and the packaging should be read instead;
-        or ``None`` when this is not a ``/new`` caption at all.
+    :returns: ``(name, brand)``, either of which may be ``None`` for a bare
+        ``/new`` where the packaging is read instead. ``None`` when the caption
+        is not a ``/new`` directive at all.
     """
     stripped = caption.strip()
     head, _, rest = stripped.partition(" ")
@@ -417,10 +395,7 @@ def _apply_correction(queued: QueuedItem, text: str) -> None:
     """Overwrite a recognised item from what the user actually said.
 
     The user naming the food outranks the model guessing at it, so the alias is
-    re-resolved against their text rather than the model's.
-
-    :param queued: The item to correct, modified in place.
-    :param text: Caption or reply text.
+    re-resolved against their text. The item is modified in place.
     """
     name, weight = parse_correction(text)
     if name is not None:
@@ -432,11 +407,7 @@ def _apply_correction(queued: QueuedItem, text: str) -> None:
 
 
 def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
-    """Approve/discard buttons for one held item.
-
-    :param queued: The item the buttons act on.
-    :returns: A one-row keyboard.
-    """
+    """Build the one-row approve/discard keyboard for a held item."""
     return InlineKeyboardMarkup(
         [
             [
@@ -453,8 +424,6 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     A lone photo is processed straight away. An album is collected first: see
     :data:`_ALBUM_SETTLE` for why it cannot be handled a photo at a time.
 
-    :param update: Incoming Telegram update carrying a photo or image document.
-    :param context: Handler context, used to run the album flush as a task.
     """
     message = update.effective_message
     if message is None:
@@ -513,10 +482,7 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _flush_album(group: str) -> None:
-    """Process one media group once its updates have stopped arriving.
-
-    :param group: Telegram ``media_group_id`` of the batch.
-    """
+    """Process one media group once its updates have stopped arriving."""
     while True:
         album = _albums.get(group)
         if album is None:
@@ -557,8 +523,8 @@ async def _offer_label(photos: list[_AlbumPhoto], name: str | None, brand: str |
     hit. This questions the model, not the user.
 
     :param photos: Every frame of the batch, sent to the model together.
-    :param name: Product name from the caption, overriding the packaging.
-    :param brand: Brand from the caption, same precedence.
+    :param name: From the caption. Overrides the packaging.
+    :param brand: From the caption. Overrides the packaging.
     """
     message = photos[0].message
     images = []
@@ -596,8 +562,7 @@ async def _add_food(query: CallbackQuery, label_id: str) -> None:
     on a scale, so there is no weight to record. The next scale photo of it logs
     with no interaction, which is the whole point.
 
-    :param query: The callback to answer with the outcome.
-    :param label_id: Key of the panel awaiting confirmation.
+    :param label_id: Key into :data:`_pending_labels`.
     """
     label = _pending_labels.pop(label_id, None)
     if label is None:
@@ -646,11 +611,8 @@ async def _add_food(query: CallbackQuery, label_id: str) -> None:
 def _label_summary(label: NutritionLabel) -> str:
     """Render everything read off a label, so a misread is visible before it sticks.
 
-    Anything derived from a percentage is marked as such: that is the figure most
-    worth a second look, being both rounded on the label and converted here.
-
-    :param label: The transcribed panel.
-    :returns: Several lines — identity, serving, macros, then the rest.
+    A value derived from a percentage is marked as such. That figure is the one
+    most worth a second look: the label rounds it, then this converts it.
     """
     head = label.name + (f" · {label.brand}" if label.brand else "")
     grams = match.serving_grams(label)
@@ -688,12 +650,11 @@ def _label_summary(label: NutritionLabel) -> str:
 
 
 async def _download(message: Message, file_id: str) -> bytes:
-    """Fetch one photo's bytes from Telegram.
+    """Fetch one photo's bytes from Telegram, never resized.
+
+    Downsampling destroys both the scale's LCD and a label's small print.
 
     :param message: Any message from the same chat, used for its bot handle.
-    :param file_id: Telegram file id to download.
-    :returns: The image bytes, never resized — the scale's LCD and a label's
-        small print are both destroyed by downsampling.
     """
     telegram_file = await message.get_bot().get_file(file_id)
     return bytes(await telegram_file.download_as_bytearray())
@@ -709,9 +670,6 @@ async def _process_photo(
 ) -> None:
     """Recognise one photo and submit or queue each item it holds.
 
-    :param message: Message the photo arrived on, replied to with the results.
-    :param file_id: Telegram file id to download.
-    :param media_type: MIME type of that file.
     :param day: Diary date to file the items against.
     :param meal: FatSecret meal to file them under.
     :param caption: Correction text to apply, empty when there is none.
@@ -786,8 +744,6 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     portion. The item is found by the id of the quoted message, so no
     conversation state has to be tracked between messages.
 
-    :param update: Incoming reply.
-    :param _context: Unused handler context.
     """
     message = update.effective_message
     if message is None or message.text is None or message.reply_to_message is None:
@@ -799,8 +755,7 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
     """Resolve a reply to its queued item and resubmit it corrected.
 
-    :param message: The reply, replied to with the outcome.
-    :param text: The reply's text, a weight or a food name.
+    :param text: A weight, or a food name.
     :param replied_to: Id of the quoted message, which identifies the item.
     """
     queue = store.load_queue()
@@ -847,8 +802,6 @@ async def on_usage(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     routes captions to the photo handler, never to a command handler. Without
     this the commands would match nothing and look broken.
 
-    :param update: Incoming ``/backlog`` or ``/new`` command.
-    :param _context: Unused handler context.
     """
     message = update.effective_message
     if message is None or message.text is None:
@@ -859,11 +812,7 @@ async def on_usage(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List items awaiting review, each with approve and discard buttons.
-
-    :param update: Incoming ``/pending`` command.
-    :param _context: Unused handler context.
-    """
+    """List items awaiting review, each with approve and discard buttons."""
     message = update.effective_message
     if message is None:
         return
@@ -881,11 +830,7 @@ async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle an approve or discard tap from ``/pending``.
-
-    :param update: Callback query update.
-    :param _context: Unused handler context.
-    """
+    """Handle an approve or discard tap from ``/pending``."""
     query = update.callback_query
     if query is None or query.data is None:
         return
@@ -916,11 +861,9 @@ async def _apply_button(
 ) -> None:
     """Act on one already-parsed callback.
 
-    :param query: The callback query, edited in place with the outcome.
     :param origin: The message the buttons are attached to, if still reachable.
     :param action: ``pick``, ``no``, or anything else meaning approve.
-    :param item_id: Queue id the button belongs to.
-    :param extra: Remaining colon-separated fields; ``pick`` puts a food id here.
+    :param extra: Remaining colon-separated fields. ``pick`` puts a food id here.
     """
     queue = store.load_queue()
     queued = next((i for i in queue if i.id == item_id), None)
@@ -979,11 +922,7 @@ async def _apply_button(
 
 
 async def on_undo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Delete the most recently submitted diary entry.
-
-    :param update: Incoming ``/undo`` command.
-    :param _context: Unused handler context.
-    """
+    """Delete the most recently submitted diary entry."""
     message = update.effective_message
     if message is None:
         return
@@ -1004,11 +943,7 @@ async def on_undo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_today(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show what the FatSecret diary holds for today.
-
-    :param update: Incoming ``/today`` command.
-    :param _context: Unused handler context.
-    """
+    """Show what the FatSecret diary holds for today."""
     message = update.effective_message
     if message is None:
         return
@@ -1031,11 +966,8 @@ async def on_today(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log any unhandled handler exception instead of failing silently.
 
-    ``fs_bot`` had no error handler, so a malformed response simply produced a
-    traceback in the console and silence in the chat.
-
-    :param update: The update being processed, if any.
-    :param context: Handler context carrying the exception.
+    Without this a malformed response produces a console traceback and silence
+    in the chat.
     """
     log.exception("handler failed", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message is not None:
@@ -1043,10 +975,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def main() -> int:
-    """Configure logging and poll until interrupted.
-
-    :returns: Process exit code.
-    """
+    """Configure logging and poll until interrupted, returning an exit code."""
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -1062,11 +991,7 @@ def main() -> int:
 
 
 def build_application(token: str) -> Application:  # type: ignore[type-arg]
-    """Assemble the Telegram application with an owner-only filter.
-
-    :param token: Telegram bot token.
-    :returns: Configured application, ready for polling.
-    """
+    """Assemble the Telegram application, ready for polling, owner-gated."""
     owner = filters.User(user_id=_owner_id())
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler(["backlog", "new"], on_usage, filters=owner))

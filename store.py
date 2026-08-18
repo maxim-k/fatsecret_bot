@@ -29,12 +29,8 @@ _queue_adapter: TypeAdapter[list[QueuedItem]] = TypeAdapter(list[QueuedItem])
 def _data_dir() -> Path:
     """Resolve the data directory, creating it on first use.
 
-    Read from the environment on every call, rather than once at import
-    time, so tests (and anything else) can point the module at a different
-    directory without reloading it.
-
-    :returns: Directory that ``aliases.json``, ``queue.json`` and
-        ``log.jsonl`` live in.
+    Read on every call, not once at import, so a test can repoint the module
+    without reloading it.
     """
     data_dir = Path(os.environ.get("DATA_DIR", "./data"))
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -42,14 +38,10 @@ def _data_dir() -> Path:
 
 
 def _read_or_none(path: Path) -> bytes | None:
-    """Read a file's raw bytes, treating "absent" and "empty" alike.
+    """Read a file's bytes, or ``None`` if it is absent or holds only whitespace.
 
-    Both a never-created file and a zero-byte one mean "nothing has been
-    saved yet" — neither is corruption and neither should raise.
-
-    :param path: File to read.
-    :returns: File contents, or ``None`` if the file doesn't exist or holds
-        only whitespace.
+    A never-created file and a zero-byte one both mean "nothing saved yet".
+    Neither is corruption. Neither may raise.
     """
     try:
         raw = path.read_bytes()
@@ -86,15 +78,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 def load_aliases() -> dict[str, Alias]:
-    """Load the learned product-to-food alias table.
-
-    :returns: Mapping of already-normalised product string to :class:`Alias`.
-        Empty if ``aliases.json`` is missing or empty.
-    :raises ValueError: If the file exists but its contents aren't valid
-        JSON matching the :class:`Alias` schema — surfaced rather than
-        swallowed, since silently discarding learned state is worse than a
-        crash.
-    """
+    """Read the alias table, or an empty one if nothing is saved yet."""
     raw = _read_or_none(_data_dir() / _ALIASES_FILENAME)
     if raw is None:
         return {}
@@ -102,22 +86,12 @@ def load_aliases() -> dict[str, Alias]:
 
 
 def save_aliases(aliases: dict[str, Alias]) -> None:
-    """Persist the alias table, atomically replacing the previous file.
-
-    :param aliases: Mapping of already-normalised product string to
-        :class:`Alias`, to write in full.
-    """
+    """Write the alias table, replacing whatever was there."""
     _atomic_write(_data_dir() / _ALIASES_FILENAME, _aliases_adapter.dump_json(aliases, indent=2))
 
 
 def load_queue() -> list[QueuedItem]:
-    """Load the queue of recognised items awaiting review or submission.
-
-    :returns: Items in file order. Empty if ``queue.json`` is missing or
-        empty.
-    :raises ValueError: If the file exists but its contents aren't valid
-        JSON matching the :class:`QueuedItem` schema.
-    """
+    """Read the review queue, or an empty one if nothing is saved yet."""
     raw = _read_or_none(_data_dir() / _QUEUE_FILENAME)
     if raw is None:
         return []
@@ -125,10 +99,7 @@ def load_queue() -> list[QueuedItem]:
 
 
 def save_queue(items: list[QueuedItem]) -> None:
-    """Persist the queue, atomically replacing the previous file.
-
-    :param items: Full queue contents to write.
-    """
+    """Write the review queue, replacing whatever was there."""
     _atomic_write(_data_dir() / _QUEUE_FILENAME, _queue_adapter.dump_json(items, indent=2))
 
 

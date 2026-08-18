@@ -46,10 +46,7 @@ _THINKING: Final = types.ThinkingConfig(thinking_budget=0)
 
 
 def model_id() -> str:
-    """Return the vision model every request uses.
-
-    :returns: Model id from ``GEMINI_MODEL``, or the default.
-    """
+    """Return the model id from ``GEMINI_MODEL``, or the default."""
     return os.environ.get("GEMINI_MODEL", _DEFAULT_MODEL)
 
 
@@ -200,18 +197,14 @@ _client: genai.Client | None = None
 
 
 def _get_client() -> genai.Client:
-    """Return the module-level Gemini client, creating it on first use.
+    """Return the shared Gemini client, creating it on first use.
 
-    Lazy construction means importing this module never requires
-    ``GEMINI_API_KEY`` to be set (useful in tests that never call
-    :func:`recognize`), and reusing one client across calls keeps the
-    underlying HTTP connection pool warm instead of rebuilding it per photo.
-    Tests monkeypatch this function to inject a fake client, so
-    :func:`recognize` never has to accept a client parameter of its own.
+    Lazy, so importing this module never requires ``GEMINI_API_KEY``. Shared,
+    so the HTTP connection pool stays warm between photos. Tests monkeypatch
+    this function, which is why :func:`recognize` takes no client parameter.
 
-    :returns: The shared :class:`genai.Client`. Requests go through its
-        ``.aio`` namespace: a sync HTTP call inside python-telegram-bot's async
-        handlers would block the whole bot's event loop while one photo is read.
+    Callers use the ``.aio`` namespace. A sync call inside a Telegram handler
+    blocks the whole event loop while one photo is read.
     """
     global _client
     if _client is None:
@@ -227,14 +220,10 @@ async def _generate[T: pydantic.BaseModel](
 ) -> T:
     """Send one request and return its validated structured output.
 
-    :param parts: Request content — image parts and prompt text, in order.
-    :param system_prompt: Instructions that do not vary per request.
-    :param schema: Pydantic model the response must satisfy.
-    :param thinking: Override the thinking budget. Only benchmark.py sets it;
-        production uses the module default.
-    :returns: The parsed response.
-    :raises RecognitionError: If the model returned nothing parseable, or its
-        output failed schema validation.
+    :param parts: Image parts and prompt text, in order.
+    :param thinking: Override the thinking budget. Only benchmark.py sets it.
+    :raises RecognitionError: If the model returned nothing parseable. Also if
+        its output failed schema validation, or the API refused the call.
     """
     try:
         response = await _get_client().aio.models.generate_content(
@@ -278,25 +267,18 @@ async def recognize(
 ) -> Recognition:
     """Turn one scale photo into structured, weight-verified food items.
 
-    :param image_bytes: Raw bytes of the photo exactly as received. Never
-        resized or recompressed before sending — the scale's LCD is often a
-        small region of the frame, and downsampling is exactly what would
-        make its digits unreadable, defeating the point of reading the
-        display instead of estimating.
-    :param media_type: MIME type of ``image_bytes`` (for example
-        ``"image/jpeg"``), as reported by Telegram.
-    :param recent_foods: Product names the user has logged before, offered
-        to the model as reuse candidates so downstream alias lookup in
-        ``match.py`` hits an existing alias instead of creating a near-
-        duplicate.
-    :param hint: Extra instruction for a second look at the same photo, telling
-        the model what the first pass returned and why it looks wrong. Only ever
-        set on a retry — and the retry's value is the hint, not a bigger model.
-    :returns: The items recognized on the scale, each with its own weight
-        reading and confidence. A ``weight_g`` of zero means no weight could be
-        read, which is a held item rather than an error.
-    :raises RecognitionError: If the model returned no parseable text
-        content, or its content failed schema validation.
+    :param image_bytes: The photo exactly as received. Never resized. The
+        scale's LCD is often a small part of the frame, and downsampling is
+        what makes its digits unreadable.
+    :param recent_foods: Names the user has logged before, offered as reuse
+        candidates. Reusing one makes :func:`match.lookup` hit an existing
+        alias instead of creating a near-duplicate.
+    :param hint: What the previous pass returned, and why it looks wrong. Only
+        set on a retry.
+    :returns: One item per food on the scale. A ``weight_g`` of zero means no
+        weight was read, which the caller holds rather than logs.
+    :raises RecognitionError: If the model returned nothing parseable, or its
+        output failed schema validation.
     """
     candidates = "\n".join(f"- {food}" for food in recent_foods)
     user_prompt = (
@@ -334,15 +316,13 @@ async def read_label(
 ) -> NutritionLabel:
     """Read a product's nutrition panel from one or more photos.
 
-    :param images: ``(bytes, media_type)`` for each photo, typically the pack
-        front and the panel. All are sent in one request so the model can take
-        the name from one frame and the numbers from another.
-    :param name: Product name supplied by the user, which overrides whatever
-        the packaging says.
-    :param brand: Brand supplied by the user, same precedence.
-    :returns: The transcribed panel.
-    :raises RecognitionError: If no photos were given, or the model returned
-        nothing parseable or something that failed schema validation.
+    :param images: ``(bytes, media_type)`` per photo, usually the pack front
+        and the panel. All go in one request, so the model can take the name
+        from one frame and the numbers from another.
+    :param name: Overrides whatever the packaging says.
+    :param brand: Overrides whatever the packaging says.
+    :raises RecognitionError: If ``images`` is empty. Also if the model
+        returned nothing parseable, or its output failed schema validation.
     """
     if not images:
         raise RecognitionError("no photos to read a label from")
@@ -368,15 +348,11 @@ async def read_label(
 def _digits_agree(item: RecognizedItem) -> bool:
     """Check the parsed weight against the digits the model says it saw.
 
-    Containment, not equality: the scale prints unit and mode glyphs beside the
-    number, so a display reading 379 comes back as ``"8379h"``. Demanding an
-    exact match rejected correct readings for noise. What must hold is that the
-    reported weight actually appears in the transcription — ``"170"`` alongside
-    ``weight_g=170.1`` still fails, which is the case this was written for.
-
-    :param item: One recognised item straight from the model.
-    :returns: ``True`` if the reported weight appears in the transcription, or a
-        unit conversion explains the difference.
+    Containment, not equality. The scale prints unit and mode glyphs beside the
+    number, so a display reading 379 arrives as ``"8379h"``. Demanding an exact
+    match rejected correct readings. What must hold is that the reported weight
+    appears in the transcription: ``"170"`` against ``weight_g=170.1`` fails,
+    which is the case this was written for.
     """
     if re.search(r"oz|lb|kg", item.raw_digits, re.IGNORECASE):
         return True  # converting to grams legitimately changes the number

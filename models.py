@@ -18,11 +18,7 @@ EPOCH = date(1970, 1, 1)
 
 
 def to_epoch_days(day: date) -> int:
-    """Convert a calendar date to FatSecret's day number.
-
-    :param day: Calendar date of the diary entry.
-    :returns: Whole days elapsed since 1970-01-01.
-    """
+    """Convert a calendar date to FatSecret's day number, counted from 1970-01-01."""
     return (day - EPOCH).days
 
 

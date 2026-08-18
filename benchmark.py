@@ -65,10 +65,7 @@ class Case:
 
 
 def load_cases() -> list[Case]:
-    """Join saved photos to their known weights.
-
-    :returns: One case per photo on disk, newest reading first.
-    """
+    """Join saved photos to their known weights, one case per photo on disk."""
     queue = json.loads((store._data_dir() / "queue.json").read_text())
     photo_of = {q["id"]: q["photo_sha256"] for q in queue}
 
@@ -106,11 +103,9 @@ def load_cases() -> list[Case]:
 
 
 async def read_once(image: bytes, budget: int) -> tuple[Recognition, float]:
-    """Read one photo, timing the round trip.
+    """Read one photo, returning the recognition and its wall-clock seconds.
 
-    :param image: Raw photo bytes.
-    :param budget: Thinking budget in tokens.
-    :returns: The recognition and its wall-clock seconds.
+    :param budget: Thinking budget in tokens. 0 disables it.
     """
     started = time.monotonic()
     recognition = await vision._generate(
@@ -123,12 +118,7 @@ async def read_once(image: bytes, budget: int) -> tuple[Recognition, float]:
 
 
 async def score(model: str, budget: int, cases: list[Case]) -> None:
-    """Run every case through one model and print a row per photo.
-
-    :param model: Gemini model id.
-    :param budget: Thinking budget in tokens.
-    :param cases: The corpus.
-    """
+    """Run every case through one model and print a row per photo."""
     import os
 
     os.environ["GEMINI_MODEL"] = model
@@ -173,10 +163,7 @@ async def score(model: str, budget: int, cases: list[Case]) -> None:
 
 
 async def main() -> int:
-    """Run the corpus through every candidate.
-
-    :returns: Process exit code.
-    """
+    """Run the corpus through every candidate, returning an exit code."""
     cases = load_cases()
     known = sum(1 for c in cases if c.expected is not None)
     print(f"{len(cases)} photos, {known} with a known weight, tolerance ±{TOLERANCE_G:g} g")
