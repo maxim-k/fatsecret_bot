@@ -18,73 +18,96 @@ photo → Gemini reads product + weight → known food? → FatSecret diary
 
 ## Setup
 
-### Step 1: FatSecret
+Five steps. Each one ends with a value in `.env`, and the last one needs the others already there.
 
-1. Register at [`platform.fatsecret.com/register`](https://platform.fatsecret.com/register)—free **Basic** edition, self sign-up, no approval.
-2. Under **Manage API Keys**, copy the **OAuth 1.0 Consumer Key and Shared Secret**.
+### Step 1: install
 
-   > Not the OAuth 2.0 **Client ID / Client Secret**. FatSecret issues both, and only OAuth 1.0 can reach a user's diary—OAuth 2.0 supports just the `client_credentials` grant, which is app-level food lookups only. Using the wrong pair fails with a bare `400 Invalid signature`.
+Requires Python 3.14 and [uv](https://docs.astral.sh/uv/). If you don't have the interpreter:
 
-3. Under **IP Restrictions**, whitelist the machine that runs the bot. Basic allows 15 individual addresses and no CIDR ranges, so add your home IP for development and the VPS IP when you deploy. Auth fails confusingly if you skip this.
+```bash
+uv python install 3.14
+```
+
+### Step 2: create your .env
+
+```bash
+cp .env.example .env
+```
+
+`.env` is gitignored—keep it that way. The rest of the setup fills it in.
+
+### Step 3: Telegram
+
+Message [@BotFather](https://t.me/BotFather) and send `/newbot`. Put the token in `TELEGRAM_BOT_TOKEN`.
+
+Get your own numeric user id from [@userinfobot](https://t.me/userinfobot) and put it in `TELEGRAM_OWNER_ID`. The bot ignores everyone else.
+
+### Step 4: Gemini
+
+Create an API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) and put it in `GEMINI_API_KEY`. There is a free tier.
+
+### Step 5: FatSecret
+
+1. Register at [`platform.fatsecret.com/register`](https://platform.fatsecret.com/register). The free **Basic** edition is self sign-up with no approval.
+2. Under **Manage API Keys**, copy the **OAuth 1.0 Consumer Key and Shared Secret** into `FATSECRET_CONSUMER_KEY` and `FATSECRET_CONSUMER_SECRET`.
+
+   > Not the OAuth 2.0 **Client ID / Client Secret**. FatSecret issues both, and only OAuth 1.0 reaches a user's diary. The wrong pair fails with a bare `400 Invalid signature`.
+
+3. Under **IP Restrictions**, whitelist the machine that runs the bot. Basic allows 15 individual addresses and no CIDR ranges, so add your home IP now and the server IP when you deploy. Auth fails confusingly if you skip this.
 4. Get an access token for your own account:
 
    ```bash
    uv run --env-file .env python fatsecret.py authorize
    ```
 
-   It prints a URL, you approve in a browser, FatSecret shows a PIN, you paste it back, and it prints the token and secret to put in `.env`. No callback server needed.
-
-
-### Step 2: Telegram
-
-Message [@BotFather](https://t.me/BotFather), send `/newbot`, and keep the token. Get your own numeric user id from [@userinfobot](https://t.me/userinfobot)—the bot ignores everyone else.
-
-### Step 3: Gemini
-
-Create an API key at [aistudio.google.com/apikey](https://aistudio.google.com/apikey). There is a free tier.
-
-### Step 4: configure
-
-```bash
-cp .env.example .env
-```
-
-Fill it in. `.env` is gitignored—keep it that way.
+   It prints a URL. Approve it in a browser, and FatSecret shows a PIN. Paste the PIN back, and it prints a token and secret for `FATSECRET_ACCESS_TOKEN` and `FATSECRET_ACCESS_SECRET`. No callback server needed.
 
 ## Running
 
 ```bash
-uv sync
 uv run --env-file .env python bot.py
 ```
 
-`--env-file` is what loads `.env`; nothing reads it implicitly, so plain `uv run python bot.py` starts with no configuration and exits.
-
-Requires Python 3.14; `uv python install 3.14` if you don't have it.
+`--env-file` is what loads `.env`. Nothing reads it implicitly, so plain `uv run python bot.py` starts with no configuration and exits.
 
 ## Using it
 
-Send the bot a photo of food on the scale, with the display readable in frame.
+Send the bot a photo of food on the scale, with the display readable in frame. Then:
+
+- **A food you've logged before** logs itself. You get `Logged Egg — 124 g` and nothing else to do.
+- **A food it doesn't know** shows the top three FatSecret matches with their macros. Tap one, and the bot logs it and remembers the name for next time.
+- **A weight unlike anything you've logged for that food** waits for you to confirm it, and shows the digits the model read. This is the check that catches a 56 g slice of bread read as 560 g.
+
+### Correcting something
+
+Reply to any message the bot sent you, whether it already logged the item or still holds it:
+
+| Reply | Does |
+|---|---|
+| `118` | Sets the weight to 118 g |
+| `-80` | Takes 80 g off, for rinds, bones and shells you can only weigh afterwards |
+| `Avocado` | Names the right food and remembers it |
+| `Avocado 118` | Both |
+
+For an item it already logged, the bot deletes the diary entry and writes a new one, so a correction never leaves two entries for one portion. If the correction can't work—subtracting more than the item weighs—the bot changes nothing and reports why.
+
+### Captions
+
+Add a caption to a photo to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. A caption beats whatever the model reads, and `-80` works here too if you know the container's weight.
+
+### Commands
 
 | Command | Does |
 |---|---|
 | `/pending` | List items waiting on you, each with Approve / Discard buttons |
-| `/today` | Show today's FatSecret diary |
+| `/today` | Show today's diary with macros and a daily total |
 | `/undo` | Remove the most recently logged entry |
 | `/backlog` | As a caption: file the photos against a past day |
 | `/new` | As a caption: read a product's nutrition label and add it to FatSecret |
 
-Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. The caption wins over whatever the model reads.
+**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal, wherever in the album you typed the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`. If the bot can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
 
-**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`—the time you send a photo says nothing about which meal it was. If the bot can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
-
-**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the bot reads the panel and offers it for one tap before writing anything. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. The bot converts percentages to amounts using the FDA daily values, and ounces to grams. It logs nothing: the next scale photo of the product does that by itself.
-
-The bot logs a known food immediately. For a new one it shows the top three FatSecret matches with their macros—tap one and it logs the food and remembers it. It holds a weight unlike anything you've logged for that food, for you to confirm.
-
-Reply to any held item: a number fixes the weight, a name fixes the food.
-
-Every reply shows the raw digits the model read alongside the parsed weight, so a misread is visible before it becomes a wrong calorie count.
+**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the bot reads the panel and shows it to you before writing anything. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. The bot logs nothing here: the next scale photo of the product does that.
 
 ## Deploying
 
@@ -100,7 +123,7 @@ The bot uses long polling, so it needs no inbound port, no TLS certificate and n
 
 **Mount the data volume** at `/data`. `aliases.json`, `queue.json` and `log.jsonl` live there, and `aliases.json` is everything the bot has learned. Losing it means teaching every food again.
 
-**Whitelist the VPS IP with FatSecret** before expecting it to work.
+**Whitelist the server IP with FatSecret** before expecting it to work.
 
 ## Development
 
@@ -128,11 +151,10 @@ Tests never call the real Gemini or FatSecret APIs. The suite stubs both.
 | `fatsecret.py` | OAuth1 client, food lookup, diary read/write, `authorize` command |
 | `bot.py` | Telegram handlers and orchestration |
 
-
 `SCOPES.md` defines commit conventions. `CLAUDE.md` holds the architectural notes and the gotchas that have already caused bugs.
 
 ## Status and known limits
 
 - **You can't delete or edit a food once it exists.** FatSecret offers no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
 - **`/new` needs a Premier tier.** On the free Basic edition `food.create` returns `error 10, Unknown method`.
-- One model reads every photo, with thinking turned off. Letting the model think tripled latency without reading anything better, and its thinking tokens count against the output cap, so a photo can come back truncated with no answer.
+- **Don't turn on model thinking.** It triples latency, reads nothing better, and its tokens count against the output cap, so a photo can come back truncated with no answer. `CLAUDE.md` has the measurements.
