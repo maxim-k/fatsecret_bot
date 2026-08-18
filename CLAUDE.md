@@ -144,4 +144,4 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 
 ## Commits
 
-One-line Conventional Commits, one commit per completed task. Scopes are defined in `SCOPE.md` — read it before committing. There is deliberately no `docs` scope.
+One-line Conventional Commits, **one line and no body** — no `Co-Authored-By:` or any other trailer. One commit per completed task. `SCOPES.md` holds the closed scope vocabulary; read it before committing. There is deliberately no `docs` scope.

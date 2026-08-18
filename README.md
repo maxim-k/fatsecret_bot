@@ -76,11 +76,11 @@ Send the bot a photo of food on the scale, with the display readable in frame.
 
 Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. The caption wins over whatever the model reads.
 
-**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`—when the photo was sent says nothing about which meal it was. A date it can't read means nothing is logged at all, rather than a batch landing quietly on the wrong day.
+**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`—the time you send a photo says nothing about which meal it was. If the bot can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
 
-**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the panel is read and offered for one tap before anything is written. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. Percentages are converted to amounts from the FDA daily values, ounces to grams. Nothing is logged: the next scale photo of it does that by itself.
+**Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the bot reads the panel and offers it for one tap before writing anything. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. The bot converts percentages to amounts using the FDA daily values, and ounces to grams. It logs nothing: the next scale photo of the product does that by itself.
 
-A known food is logged immediately. A new one shows the top three FatSecret matches with their macros—tap one and it's logged and remembered. A weight unlike anything you've logged for that food is held for you to confirm.
+The bot logs a known food immediately. For a new one it shows the top three FatSecret matches with their macros—tap one and it logs the food and remembers it. It holds a weight unlike anything you've logged for that food, for you to confirm.
 
 Reply to any held item: a number fixes the weight, a name fixes the food.
 
@@ -111,7 +111,7 @@ uv run mypy *.py         # strict type check
 uv run pytest -q         # tests
 ```
 
-Tests never call the real Gemini or FatSecret APIs—both are stubbed.
+Tests never call the real Gemini or FatSecret APIs. The suite stubs both.
 
 `benchmark.py` does hit the real API: it replays every photo in `data/photos/` through a list of candidate models and scores them against the weights already in your diary. Run it before changing `GEMINI_MODEL`.
 
@@ -129,10 +129,10 @@ Tests never call the real Gemini or FatSecret APIs—both are stubbed.
 | `bot.py` | Telegram handlers and orchestration |
 
 
-`SCOPE.md` defines commit conventions. `CLAUDE.md` holds the architectural notes and the gotchas that have already caused bugs.
+`SCOPES.md` defines commit conventions. `CLAUDE.md` holds the architectural notes and the gotchas that have already caused bugs.
 
 ## Status and known limits
 
-- **A created food can't be deleted or edited.** FatSecret has no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
+- **You can't delete or edit a food once it exists.** FatSecret offers no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
 - **`/new` needs a Premier tier.** On the free Basic edition `food.create` returns `error 10, Unknown method`.
 - One model reads every photo, with thinking turned off. Letting the model think tripled latency without reading anything better, and its thinking tokens count against the output cap, so a photo can come back truncated with no answer.
