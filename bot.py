@@ -299,18 +299,31 @@ async def _offer_foods(message: Message, queued: QueuedItem, queue: list[QueuedI
     store.save_queue(queue)
 
 
+# A sign has to touch its digits. People write a dash as a separator, so
+# "Melon - 80" is an absolute 80, and only "Melon -80" is a subtraction.
+_WEIGHT_RE: Final = re.compile(r"(?:^|\s)([-+]?\d+(?:\.\d+)?)\s*(?:g|grams?)?$", re.IGNORECASE)
+
+
 def parse_correction(text: str) -> tuple[str | None, float | None]:
     """Split a caption or reply into an optional food name and weight.
 
     ``"Avocado"`` names the food, ``"56"`` sets the weight, ``"Avocado 56"``
-    does both. Shared by captions and replies so the two cannot drift apart.
+    does both. A negative number is a subtraction: ``"-80"`` takes 80 g off,
+    which is how the rinds and the bones come off a weight you could only read
+    after eating. Shared by captions and replies so the two cannot drift apart.
 
-    :returns: ``(name, weight)``, either of which may be ``None``.
+    :returns: ``(name, weight)``, either of which may be ``None``. A negative
+        weight is a delta, not a new total. A leading ``+`` is redundant and
+        reads as a plain positive.
     """
     cleaned = text.strip().replace(",", ".")
-    trailing = re.search(r"(?:^|\s)(\d+(?:\.\d+)?)\s*(?:g|grams?)?$", cleaned, re.IGNORECASE)
+    trailing = _WEIGHT_RE.search(cleaned)
     weight = float(trailing.group(1)) if trailing else None
     name = cleaned[: trailing.start()].strip() if trailing else cleaned
+    # "- 80" leaves a bare dash behind. Naming a food "-" would overwrite the
+    # product and send the bot searching FatSecret for punctuation.
+    if not any(char.isalnum() for char in name):
+        name = ""
     return (name or None), weight
 
 
@@ -391,19 +404,40 @@ def parse_new(caption: str) -> tuple[str | None, str | None] | None:
     return name.strip() or None, brand.strip() or None
 
 
-def _apply_correction(queued: QueuedItem, text: str) -> None:
+def _apply_correction(queued: QueuedItem, text: str) -> float | None:
     """Overwrite a recognised item from what the user actually said.
 
     The user naming the food outranks the model guessing at it, so the alias is
     re-resolved against their text. The item is modified in place.
+
+    :returns: The grams subtracted, or ``None`` if the weight was set outright.
+    :raises ValueError: If the subtraction leaves nothing. ``weight_g`` has a
+        floor of 0, but no model sets ``validate_assignment``, so a negative
+        assignment would pass silently here and fail much later in
+        :func:`match.units_for` — after the old diary entry is already gone.
     """
     name, weight = parse_correction(text)
     if name is not None:
         queued.item.product = name
         queued.alias = match.lookup(name, store.load_aliases())
-    if weight is not None:
+    if weight is None:
+        return None
+    if weight >= 0:
         queued.item.weight_g = weight
         queued.item.raw_digits = f"{weight:g}"
+        return None
+
+    scraps = -weight
+    if scraps >= queued.item.weight_g:
+        raise ValueError(
+            f"That leaves nothing: {queued.item.product} is "
+            f"{queued.item.weight_g:g} g and you asked to take off {scraps:g} g."
+        )
+    # Record the arithmetic, not the result: raw_digits means "where the number
+    # came from", and _describe shows it back.
+    queued.item.raw_digits = f"{queued.item.weight_g:g}-{scraps:g}"
+    queued.item.weight_g -= scraps
+    return scraps
 
 
 def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
@@ -700,7 +734,12 @@ async def _process_photo(
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
         if caption:
-            _apply_correction(queued, caption)
+            try:
+                # A caption can subtract too, which is how a known container
+                # weight comes off the reading before anything is logged.
+                _apply_correction(queued, caption)
+            except ValueError as exc:
+                await message.reply_text(str(exc))
 
         hold = _hold_reason(queued)
         if hold is None:
@@ -763,21 +802,33 @@ async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
     if queued is None:
         return  # a reply to something that is not one of our items
 
+    # Apply the correction before touching FatSecret. A reply that cannot be
+    # applied must leave the diary alone: the queue is never saved on this path,
+    # so returning here discards the mutation too.
+    previous = queued.item.weight_g
+    try:
+        scraps = _apply_correction(queued, text)
+    except ValueError as exc:
+        await message.reply_text(str(exc))
+        return
+
     # Correcting something already logged means replacing it, not adding to it.
     superseded: float | None = None
     if queued.state == ItemState.SUBMITTED and queued.food_entry_id is not None:
-        superseded = queued.item.weight_g
+        superseded = previous
         try:
             await fatsecret.delete_entry(queued.food_entry_id)
         except fatsecret.FatSecretError as exc:
             # Stop rather than risk two entries for one portion.
             await message.reply_text(f"Couldn't remove the old entry: {exc}")
             return
-        store.append_log("corrected", {"item_id": queued.id, "removed_entry": queued.food_entry_id})
+        store.append_log(
+            "corrected",
+            {"item_id": queued.id, "removed_entry": queued.food_entry_id, "scraps": scraps},
+        )
         queued.food_entry_id = None
         queued.state = ItemState.PENDING
 
-    _apply_correction(queued, text)
     if queued.alias is None:
         store.save_queue(queue)
         await _offer_foods(message, queued, queue)
@@ -788,6 +839,8 @@ async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
     except (fatsecret.FatSecretError, match.NoGramServingError, ValueError) as exc:
         await message.reply_text(f"Couldn't submit: {exc}")
         return
+    if scraps is not None:
+        text += f" (took off {scraps:g} g from {previous:g})"
 
     store.save_queue(queue)
     sent = await message.reply_text(text)

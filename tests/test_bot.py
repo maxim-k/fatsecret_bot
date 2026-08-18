@@ -124,6 +124,18 @@ def test_hold_reason_clears_once_the_weight_is_back_in_band() -> None:
         ("56,4", None, 56.4),
         ("  Greek Yogurt  ", "Greek Yogurt", None),
         ("Fiber One Fulfill Bars", "Fiber One Fulfill Bars", None),
+        # A minus touching its digits is a subtraction.
+        ("-80", None, -80.0),
+        ("-80 g", None, -80.0),
+        ("Melon -80", "Melon", -80.0),
+        ("-80.5", None, -80.5),
+        # A dash used as a separator is not. "Melon - 80" means 80 g of melon,
+        # and reading it as a subtraction would be silently wrong.
+        ("Melon - 80", "Melon -", 80.0),
+        # A bare dash must not become the food's name.
+        ("- 80", None, 80.0),
+        # A leading plus is redundant, not an addition.
+        ("+80", None, 80.0),
     ],
 )
 def test_parse_correction(caption: str, name: str | None, weight: float | None) -> None:
@@ -469,3 +481,154 @@ def test_no_weight_outranks_new_food() -> None:
     )
     assert unread.alias is None
     assert bot._hold_reason(unread) == "Couldn't read a weight."
+
+
+# --- subtracting scraps ---------------------------------------------------------
+
+
+def _logged(weight: float = 350.0, product: str = "melon") -> QueuedItem:
+    """An item already written to the diary, as a reply would find it."""
+    alias = Alias(food_id=7, food_name="Melon", serving_id=2, serving_grams=100.0)
+    alias.weights = [340.0, 350.0]
+    return QueuedItem(
+        id="m" * 32,
+        photo_sha256="x",
+        day=date(2026, 8, 17),
+        item=RecognizedItem(
+            product=product, weight_g=weight, raw_digits=str(int(weight)), confidence=0.9
+        ),
+        alias=alias,
+        state=ItemState.SUBMITTED,
+        message_id=99,
+        food_entry_id=4242,
+    )
+
+
+def test_subtracting_scraps_takes_them_off_the_reading() -> None:
+    queued = _logged()
+    scraps = bot._apply_correction(queued, "-80")
+    assert scraps == 80.0
+    assert queued.item.weight_g == 270.0
+    # raw_digits records where the number came from, not just the result.
+    assert queued.item.raw_digits == "350-80"
+
+
+def test_subtracting_more_than_there_is_refuses() -> None:
+    queued = _logged()
+    with pytest.raises(ValueError, match="leaves nothing"):
+        bot._apply_correction(queued, "-400")
+    # The item is untouched, so the caller can still fall back to it.
+    assert queued.item.weight_g == 350.0
+
+
+def test_subtracting_everything_refuses() -> None:
+    # 0 g is the "no weight was read" signal, so it must not be reachable by
+    # arithmetic.
+    with pytest.raises(ValueError):
+        bot._apply_correction(_logged(), "-350")
+
+
+def test_a_plain_number_still_replaces_rather_than_adjusts() -> None:
+    queued = _logged()
+    assert bot._apply_correction(queued, "118") is None
+    assert queued.item.weight_g == 118.0
+
+
+# --- correcting a logged item end to end ----------------------------------------
+
+
+class _Recorder:
+    """Stands in for FatSecret, recording what the reply path actually did."""
+
+    def __init__(self) -> None:
+        self.deleted: list[int] = []
+        self.created: list[float] = []
+        self.replies: list[str] = []
+        # _apply_reply repoints the item at its newest message, so a further
+        # correction replies to the latest confirmation.
+        self.message_id = 100
+
+    async def delete_entry(self, food_entry_id: int) -> None:
+        self.deleted.append(food_entry_id)
+
+    async def create_entry(self, **kwargs: object) -> DiaryEntry:
+        units = kwargs["units"]
+        assert isinstance(units, float)
+        self.created.append(units)
+        return DiaryEntry(food_entry_id=5150, food_id=7, name="Melon", day=date(2026, 8, 17))
+
+    async def reply_text(self, text: str, **_kwargs: object) -> _Recorder:
+        self.replies.append(text)
+        self.message_id += 1
+        return self
+
+
+@pytest.fixture
+def _reply_env(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    rec = _Recorder()
+    monkeypatch.setattr(bot.fatsecret, "delete_entry", rec.delete_entry)
+    monkeypatch.setattr(bot.fatsecret, "create_entry", rec.create_entry)
+    store.save_aliases(
+        {"melon": Alias(food_id=7, food_name="Melon", serving_id=2, serving_grams=100.0)}
+    )
+    return rec
+
+
+async def test_reply_subtracting_scraps_replaces_the_entry(_reply_env: _Recorder) -> None:
+    queued = _logged()
+    store.save_queue([queued])
+
+    await bot._apply_reply(_reply_env, "-80", 99)  # type: ignore[arg-type]
+
+    assert _reply_env.deleted == [4242]  # the old entry went
+    assert _reply_env.created == [2.7]  # 270 g against a 100 g serving
+    assert "270 g" in _reply_env.replies[-1]
+    assert "took off 80 g" in _reply_env.replies[-1]
+
+
+async def test_reply_subtracting_too_much_leaves_the_diary_alone(
+    _reply_env: _Recorder,
+) -> None:
+    # The guard this whole ordering exists for: the entry used to be deleted
+    # before the reply was parsed, so an impossible correction lost the food.
+    store.save_queue([_logged()])
+
+    await bot._apply_reply(_reply_env, "-400", 99)  # type: ignore[arg-type]
+
+    assert _reply_env.deleted == []
+    assert _reply_env.created == []
+    assert "leaves nothing" in _reply_env.replies[-1]
+    still_there = store.load_queue()[0]
+    assert still_there.food_entry_id == 4242
+    assert still_there.item.weight_g == 350.0
+    assert still_there.state == ItemState.SUBMITTED
+
+
+async def test_reply_subtraction_trains_the_band_on_the_eaten_weight(
+    _reply_env: _Recorder,
+) -> None:
+    # 270 g is what was actually eaten, so 270 is what the plausible band should
+    # learn — and the 350 it replaces must not stay beside it.
+    store.save_aliases(
+        {
+            "melon": Alias(
+                food_id=7,
+                food_name="Melon",
+                serving_id=2,
+                serving_grams=100.0,
+                weights=[340.0, 350.0],
+            )
+        }
+    )
+    store.save_queue([_logged()])
+
+    await bot._apply_reply(_reply_env, "-80", 99)  # type: ignore[arg-type]
+
+    assert store.load_aliases()["melon"].weights == [340.0, 270.0]
+
+
+async def test_reply_to_an_unknown_message_does_nothing(_reply_env: _Recorder) -> None:
+    store.save_queue([_logged()])
+    await bot._apply_reply(_reply_env, "-80", 12345)  # type: ignore[arg-type]
+    assert _reply_env.deleted == []
+    assert _reply_env.replies == []
