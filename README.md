@@ -1,6 +1,6 @@
-# pht_food_bot
+# fatsecret_bot
 
-Photograph your food on kitchen scales, forward it to a Telegram chat, forget about it. The bot reads the product and the weight off the scale's display, logs it to your FatSecret diary, and the Physical Life app syncs it from there.
+Photograph your food on kitchen scales, forward it to a Telegram chat, forget about it. The bot reads the product and the weight off the scale's display and logs it to your FatSecret diary.
 
 ## Why
 
@@ -11,12 +11,10 @@ So the design goal isn't "make typing faster", it's **a food you've eaten before
 ## How it works
 
 ```
-photo → Claude reads product + weight → known food? → FatSecret diary → Physical Life
+photo → Claude reads product + weight → known food? → FatSecret diary
                                              │
                                           new food → held for one tap
 ```
-
-Physical Life has no public API, so the bot never talks to it. It writes to FatSecret, and Physical Life's own FatSecret integration pulls it in.
 
 ## Setup
 
@@ -36,7 +34,6 @@ Physical Life has no public API, so the bot never talks to it. It writes to FatS
 
    It prints a URL, you approve in a browser, FatSecret shows a PIN, you paste it back, and it prints the token and secret to put in `.env`. No callback server needed.
 
-5. In the Physical Life app, turn the **FatSecret integration** switch on.
 
 ### 2. Telegram
 
@@ -92,11 +89,11 @@ Every reply shows the raw digits the model read alongside the parsed weight, so 
 ## Deploying
 
 ```bash
-docker build --target prod -t pht-food-bot:prod .
+docker build --target prod -t fatsecret-bot:prod .
 docker run -d --restart unless-stopped \
   --env-file .env \
-  -v /srv/pht-food-bot/data:/app/data \
-  pht-food-bot:prod
+  -v /srv/fatsecret-bot/data:/app/data \
+  fatsecret-bot:prod
 ```
 
 The bot uses long polling, so it needs no inbound port, no TLS certificate and no reverse proxy — outbound connections only.
@@ -136,5 +133,4 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 
 - **A created food can't be deleted or edited.** FatSecret has no `food.delete` and no `food.edit`, which is why `/new` shows the panel and waits for a tap. A wrong number means creating a corrected food and ignoring the first.
 - **`/new` needs a Premier tier.** On the free Basic edition `food.create` returns `error 10, Unknown method`.
-- **Whether Physical Life backfills older entries is unknown.** If it only syncs recent ones, `/backlog` writes entries that never reach the app. Worth checking against a real backlogged day before relying on it.
 - The model defaults to `claude-haiku-4-5` on cost grounds. If it misreads scale digits, set `ANTHROPIC_MODEL=claude-sonnet-5` — check the `raw_digits` field on your first batch of real photos before deciding.

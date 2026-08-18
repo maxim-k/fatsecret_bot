@@ -4,18 +4,9 @@ Guidance for Claude Code when working in this repo.
 
 ## What this is
 
-A single-user Telegram bot. The user photographs food on kitchen scales, forwards the photo to the bot, and the bot logs it to their **FatSecret** diary. The **Physical Life** fitness app (`pht.space`) syncs that diary, so FatSecret is the write target and Physical Life is never contacted.
+A single-user Telegram bot. The user photographs food on kitchen scales, forwards the photo to the bot, and the bot logs it to their **FatSecret** diary. FatSecret is the only external service the bot writes to.
 
 The problem being solved is *backlog*, not typing. Entering food by hand is slow, so it gets deferred, and deferred logging becomes no logging. Therefore: **a food the user has eaten before must require zero interaction.** Any change that adds a confirmation step to a repeat food defeats the point.
-
-## Do not reverse-engineer the Physical Life API
-
-This was tried and abandoned. Do not restart it without being asked.
-
-- **HTTP proxy mode** (mitmproxy): 172 flows captured and decrypted, but zero requests to any Fizikl/PHT host — only the app's native SDKs (Amplitude, Sentry, Firebase). Flutter's `dart:io` ignores the iOS system HTTP proxy.
-- **WireGuard mode**: tunnel active, keys verified, listener confirmed, firewall off, Mac↔phone ping 9 ms — `tcpdump 'udp port 51820'` captured **0 packets** across three attempts. iOS never put the handshake on the wire.
-
-FatSecret has a documented public API and Physical Life syncs from it. That is the route.
 
 ## Architecture
 
@@ -123,7 +114,7 @@ Worth testing: the gram→serving maths, alias resolution, LLM-response validati
 - **Short-term throttling is real and undocumented**: bursts return HTTP 200 with `error 12`, "User is performing too many actions". This is separate from the 5,000/day cap and clears on its own. Keep bulk reads sequential with a ~1.5 s delay; do not fan out with `asyncio.gather`.
 - A food logged from a non-US regional dataset can return `error 106 Invalid ID` when looked up on the Basic tier. Skip and continue rather than aborting a bulk operation.
 - Liquids (milk, protein shakes, beer) usually expose only **ml** servings, so `pick_serving` rejects them by design and they land in the review queue. That is correct, not a bug — grams and millilitres are not interchangeable.
-- Basic tier is **US-only dataset**. This is a non-issue: the user lives in the US and logs US-catalogue foods exclusively. Physical Life treats the diary as a plain nutrient tracker and does not care about the food's source. Aliases are seeded from the user's own diary history rather than search (37 seeded from August 2025).
+- Basic tier is **US-only dataset**. This is a non-issue: the user lives in the US and logs US-catalogue foods exclusively. Aliases are seeded from the user's own diary history rather than search (37 seeded from August 2025).
 
 **Vision**
 - `weight_g` is required and `> 0`, so the model cannot express "unreadable". **`confidence: 0.0` is the agreed signal** that the weight was not actually read; `bot.UNREADABLE` is the only confidence value that holds an item. Anything between 0 and 1 is self-graded noise — a 0.75 once held two correct readings.

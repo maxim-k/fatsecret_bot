@@ -1,7 +1,7 @@
 [project]
-name = "pht-food-bot"
+name = "fatsecret-bot"
 version = "0.1.0"
-description = "Telegram bot that logs photographed food to FatSecret, which Physical Life syncs from"
+description = "Telegram bot that logs photographed food to a FatSecret diary"
 requires-python = ">=3.14"
 dependencies = [
     "python-telegram-bot>=21",
