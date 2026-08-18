@@ -471,17 +471,35 @@ def test_parse_new_ignores_everything_else(caption: str) -> None:
 
 
 @pytest.mark.parametrize("schema_model", [Recognition, NutritionLabel])
-def test_response_schemas_stay_within_provider_limits(schema_model: type[BaseModel]) -> None:
-    """Guard the two constraints that actually broke /new in production.
+def test_response_schemas_convert_for_the_provider(schema_model: type[BaseModel]) -> None:
+    """Guard the bug class that killed /new for a whole release.
 
-    Every test mocked the client, so the request was never built and a schema
-    the API refuses outright looked fine all the way to the user. Anthropic caps
-    a schema at 16 union-typed parameters and Gemini is unreliable on open-ended
-    maps; both are checkable offline, against the schema itself.
+    Every test mocked the client, so no request was ever built and a schema the
+    API refuses looked fine all the way to the user. The SDK converts a Pydantic
+    model to the provider's schema *client-side*, so the conversion that
+    actually failed is checkable offline, with the provider's own rules rather
+    than a hand-written imitation of them.
+
+    Uses a private helper on purpose: it is the only way to reach the conversion
+    without a network call, and a wrong schema is worth catching here rather
+    than in production. If a SDK upgrade moves it, follow it.
+    """
+    from google.genai import _transformers
+
+    assert _transformers.t_schema(None, schema_model) is not None
+
+
+@pytest.mark.parametrize("schema_model", [Recognition, NutritionLabel])
+def test_response_schemas_stay_portable(schema_model: type[BaseModel]) -> None:
+    """Keep the schemas within the tightest limit any provider imposes.
+
+    Gemini accepts more nullable fields than Anthropic does, so the conversion
+    test above would not catch a re-flattened panel. Anthropic caps a schema at
+    16 union-typed parameters; NutritionLabel had 17 and every /new returned a
+    400 before the photo was sent.
     """
     schema = schema_model.model_json_schema()
     blocks = [schema, *schema.get("$defs", {}).values()]
-
     unions = [
         f"{block.get('title', '?')}.{name}"
         for block in blocks
@@ -489,14 +507,6 @@ def test_response_schemas_stay_within_provider_limits(schema_model: type[BaseMod
         if "anyOf" in prop or isinstance(prop.get("type"), list)
     ]
     assert len(unions) <= 16, f"too many nullable fields to send: {unions}"
-
-    maps = [
-        f"{block.get('title', '?')}.{name}"
-        for block in blocks
-        for name, prop in block.get("properties", {}).items()
-        if prop.get("type") == "object" and "additionalProperties" in prop
-    ]
-    assert not maps, f"open-ended maps do not convert reliably: {maps}"
 
 
 def test_a_zero_weight_is_held_rather_than_rejected() -> None:

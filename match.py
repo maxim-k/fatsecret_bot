@@ -266,7 +266,9 @@ def serving_grams(label: NutritionLabel) -> float | None:
         everything that is not water — so an unfamiliar unit falls back to "not
         a weight" rather than being assumed to be grams.
     """
-    if label.serving_amount is None or label.serving_unit is None:
+    # A zero amount means the same as none: the schema cannot forbid it, so it
+    # is rejected here.
+    if not label.serving_amount or label.serving_unit is None:
         return None
     unit = label.serving_unit.strip().lower()
     if unit in ("g", "gram", "grams"):

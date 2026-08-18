@@ -103,7 +103,10 @@ class NutritionLabel(BaseModel):
     # The same serving as a quantity. Reported in whatever unit is printed;
     # ounces are converted to grams downstream rather than by the model, since
     # arithmetic is the part of reading a label it is least reliable at.
-    serving_amount: float | None = Field(default=None, gt=0)
+    # ``ge`` rather than ``gt``: Gemini's schema subset rejects the
+    # exclusiveMinimum that gt emits, so a zero is filtered in
+    # ``match.serving_grams`` instead of here.
+    serving_amount: float | None = Field(default=None, ge=0)
     # A plain string, not an enum: a nullable enum is the other construct that
     # converts badly between providers. ``match.serving_grams`` validates it,
     # and treats anything it does not recognise as "not a weight".
