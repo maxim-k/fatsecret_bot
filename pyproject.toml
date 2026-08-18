@@ -10,13 +10,24 @@ dependencies = [
     "pydantic>=2",
 ]
 
+# Split by job, so one task installs only what it needs: the Docker test stage
+# takes --only-group test and never pulls a linter. `dev` is the umbrella a
+# human types, and the only name that has to be remembered.
 [dependency-groups]
-dev = [
-    "mypy>=1.11",
-    "ruff>=0.6",
+test = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    # Intercepts httpx, which is how the FatSecret client is tested without
+    # touching the live API.
     "respx>=0.21",
+]
+lint = [
+    "mypy>=1.11",
+    "ruff>=0.6",
+]
+dev = [
+    {include-group = "test"},
+    {include-group = "lint"},
 ]
 
 [tool.uv]

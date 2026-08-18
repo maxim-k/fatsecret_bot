@@ -340,6 +340,15 @@ dev = [
     { name = "respx" },
     { name = "ruff" },
 ]
+lint = [
+    { name = "mypy" },
+    { name = "ruff" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "respx" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -356,6 +365,15 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "respx", specifier = ">=0.21" },
     { name = "ruff", specifier = ">=0.6" },
+]
+lint = [
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "ruff", specifier = ">=0.6" },
+]
+test = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "respx", specifier = ">=0.21" },
 ]
 
 [[package]]

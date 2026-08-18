@@ -89,16 +89,16 @@ Every reply shows the raw digits the model read alongside the parsed weight, so 
 ## Deploying
 
 ```bash
-docker build --target prod -t fatsecret-bot:prod .
+docker buildx build --target prod -t fatsecret-bot .
 docker run -d --restart unless-stopped \
   --env-file .env \
-  -v /srv/fatsecret-bot/data:/app/data \
-  fatsecret-bot:prod
+  -v /srv/fatsecret-bot/data:/data \
+  fatsecret-bot
 ```
 
 The bot uses long polling, so it needs no inbound port, no TLS certificate and no reverse proxy — outbound connections only.
 
-**Mount the data volume.** `aliases.json`, `queue.json` and `log.jsonl` live there, and `aliases.json` is everything the bot has learned. Losing it means teaching every food again.
+**Mount the data volume** at `/data`. `aliases.json`, `queue.json` and `log.jsonl` live there, and `aliases.json` is everything the bot has learned. Losing it means teaching every food again.
 
 **Whitelist the VPS IP with FatSecret** before expecting it to work.
 
@@ -115,7 +115,7 @@ Tests never touch the real Gemini or FatSecret APIs — both are stubbed.
 
 `benchmark.py` does hit the real API: it replays every photo in `data/photos/` through a list of candidate models and scores them against the weights already in your diary. Run it before changing `GEMINI_MODEL`.
 
-`docker build --target dev` gives an image with the dev tooling included.
+`docker buildx build --target dev` gives an image with the test and lint tooling included. `docker buildx build --target test` runs ruff, mypy and the suite inside the image and fails the build if any of them fails.
 
 ## Layout
 

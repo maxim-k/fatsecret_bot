@@ -5,11 +5,11 @@ data/
 .env
 .env.*
 
-# Never needed at run time.
+# Never needed in any image. What each stage gets is decided by the COPY lines
+# in the Dockerfile, not here: tests and benchmark.py belong in dev, so they
+# have to stay in the build context.
 .venv/
 .git/
-tests/
-benchmark.py
 __pycache__/
 *.py[cod]
 .mypy_cache/
