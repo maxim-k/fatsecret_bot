@@ -8,7 +8,7 @@ import pytest
 import bot
 import match
 import store
-from models import Alias, ItemState, QueuedItem, RecognizedItem
+from models import Alias, DiaryEntry, Food, ItemState, QueuedItem, RecognizedItem
 
 
 @pytest.fixture(autouse=True)
@@ -362,3 +362,67 @@ async def test_album_with_a_bad_directive_logs_nothing(monkeypatch: pytest.Monke
 
     assert processed == []  # nothing filed against the wrong day
     assert len(replies) == 1  # and the batch is told once, not three times
+
+
+# --- /today macros --------------------------------------------------------------
+
+
+def test_macro_line_matches_the_pickers_field_order_and_separators() -> None:
+    line = bot._macro_line(158, 0.0, 30.16, 5.74)
+    assert line == "Calories: 158kcal · Fat: 0.00g · Carbs: 30.16g · Protein: 5.74g"
+    # The picker builds its line by reformatting FatSecret's own description;
+    # the two must stay visually identical.
+    picker = bot._food_line(
+        1,
+        Food(
+            food_id=1,
+            name="Sourdough",
+            servings=[],
+            description=(
+                "Per 100g - Calories: 158kcal | Fat: 0.00g | Carbs: 30.16g | Protein: 5.74g"
+            ),
+        ),
+        weighable=True,
+    )
+    assert picker.endswith("Per 100g — " + line)
+
+
+def test_today_totals_every_entry() -> None:
+    entries = [
+        DiaryEntry(
+            food_entry_id=1,
+            food_id=1,
+            name="Bread",
+            day=date(2026, 8, 16),
+            calories=158,
+            fat=0.0,
+            carbs=30.16,
+            protein=5.74,
+        ),
+        DiaryEntry(
+            food_entry_id=2,
+            food_id=2,
+            name="Egg",
+            day=date(2026, 8, 16),
+            calories=143,
+            fat=9.51,
+            carbs=0.72,
+            protein=12.56,
+        ),
+    ]
+    total = bot._macro_line(
+        sum(e.calories for e in entries),
+        sum(e.fat for e in entries),
+        sum(e.carbs for e in entries),
+        sum(e.protein for e in entries),
+    )
+    assert total == "Calories: 301kcal · Fat: 9.51g · Carbs: 30.88g · Protein: 18.30g"
+
+
+def test_diary_entry_without_macros_reads_as_zero() -> None:
+    # A food from an odd dataset can omit a field; the day's listing must still
+    # render rather than blowing up on a missing carb count.
+    entry = DiaryEntry(food_entry_id=1, food_id=1, name="Mystery", day=date(2026, 8, 16))
+    assert bot._macro_line(entry.calories, entry.fat, entry.carbs, entry.protein).startswith(
+        "Calories: 0kcal"
+    )

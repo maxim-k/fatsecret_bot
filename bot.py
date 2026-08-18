@@ -231,6 +231,26 @@ def _queue_item(item: RecognizedItem, photo_sha256: str, day: date, meal: str) -
     )
 
 
+def _macro_line(calories: float, fat: float, carbs: float, protein: float) -> str:
+    """Render macros the way FatSecret's own food descriptions read.
+
+    Deliberately mirrors the summary string `_food_line` shows for a search hit,
+    down to the field order and separators, so the diary and the picker do not
+    look like two different apps. The picker reformats FatSecret's string; this
+    builds the same shape from numbers, because a diary entry has no such string.
+
+    :param calories: Energy in kcal.
+    :param fat: Fat in grams.
+    :param carbs: Carbohydrate in grams.
+    :param protein: Protein in grams.
+    :returns: One line of text.
+    """
+    return (
+        f"Calories: {calories:.0f}kcal · Fat: {fat:.2f}g · "
+        f"Carbs: {carbs:.2f}g · Protein: {protein:.2f}g"
+    )
+
+
 def _food_line(index: int, food: Food, weighable: bool) -> str:
     """Render one search hit as a choosable line.
 
@@ -834,7 +854,16 @@ async def on_today(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     if not entries:
         await message.reply_text("Diary is empty today.")
         return
-    await message.reply_text("\n".join(f"• {e.name}" for e in entries))
+    lines = [
+        f"• {e.name}\n   {_macro_line(e.calories, e.fat, e.carbs, e.protein)}" for e in entries
+    ]
+    total = _macro_line(
+        sum(e.calories for e in entries),
+        sum(e.fat for e in entries),
+        sum(e.carbs for e in entries),
+        sum(e.protein for e in entries),
+    )
+    await message.reply_text("\n".join(lines) + f"\n\nTotal — {total}")
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

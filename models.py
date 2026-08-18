@@ -129,3 +129,11 @@ class DiaryEntry(BaseModel):
     food_id: int
     name: str
     day: date
+    # The diary read already returns each entry's macros scaled to the portion
+    # that was logged, so showing them costs no extra API calls. Defaulted
+    # rather than required because a food from an odd dataset can omit one, and
+    # a missing carb count is no reason to fail the whole day's listing.
+    calories: float = 0.0
+    fat: float = 0.0
+    carbs: float = 0.0
+    protein: float = 0.0

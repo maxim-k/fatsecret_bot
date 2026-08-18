@@ -312,6 +312,12 @@ def _parse_diary_entry(raw: dict[str, Any], day: date) -> DiaryEntry:
         food_id=int(raw["food_id"]),
         name=raw["food_entry_name"],
         day=day,
+        # FatSecret spells it "carbohydrate" here and "carbs" in the food
+        # description string; the model uses the short name throughout.
+        calories=_num(raw.get("calories", 0)),
+        fat=_num(raw.get("fat", 0)),
+        carbs=_num(raw.get("carbohydrate", 0)),
+        protein=_num(raw.get("protein", 0)),
     )
 
 
