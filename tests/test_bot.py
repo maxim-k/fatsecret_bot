@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 import bot
+import match
 import store
 from models import Alias, ItemState, QueuedItem, RecognizedItem
 
@@ -236,3 +237,128 @@ def test_escalation_fires_on_a_shaky_reading() -> None:
         alias=alias,
     )
     assert bot._reread_hint(confident) is None
+
+
+# --- /backlog directive parsing -------------------------------------------------
+
+
+def test_backlog_parses_a_full_date_and_meal() -> None:
+    assert bot.parse_backlog("/backlog 15/08/2026 lunch") == (date(2026, 8, 15), "lunch")
+
+
+def test_backlog_reads_day_before_month_not_the_us_order() -> None:
+    # 13/08 can only be the 13th of August; 08/13 is not a valid DD/MM and must
+    # be refused rather than silently read as August 13th.
+    assert bot.parse_backlog("/backlog 13/08/2026")[0] == date(2026, 8, 13)
+    with pytest.raises(ValueError):
+        bot.parse_backlog("/backlog 08/13/2026")
+
+
+def test_backlog_fills_in_the_current_year() -> None:
+    day, _meal = bot.parse_backlog("/backlog 15/08")
+    assert (day.day, day.month) == (15, 8)
+    assert day.year == datetime.now().astimezone().year
+
+
+def test_backlog_accepts_today_and_yesterday() -> None:
+    today = datetime.now().astimezone().date()
+    assert bot.parse_backlog("/backlog today")[0] == today
+    assert bot.parse_backlog("/backlog yesterday")[0] == today - timedelta(days=1)
+
+
+def test_backlog_defaults_to_other_rather_than_the_time_of_sending() -> None:
+    # The photo is of a past meal, so when it was sent says nothing about which
+    # meal it was.
+    assert bot.parse_backlog("/backlog 15/08/2026")[1] == "other"
+
+
+@pytest.mark.parametrize("meal", sorted(match.MEALS))
+def test_backlog_accepts_every_meal_fatsecret_takes(meal: str) -> None:
+    assert bot.parse_backlog(f"/backlog 15/08/2026 {meal}")[1] == meal
+
+
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "/backlog",
+        "/backlog notadate lunch",
+        "/backlog 32/13/2026",
+        "/backlog 15/08/2026 brunch",
+        "/backlog 15/08/2026 lunch and also eggs",
+    ],
+)
+def test_backlog_refuses_what_it_cannot_read(caption: str) -> None:
+    # Refusing beats defaulting to today: a whole batch would land on the wrong
+    # day without saying so.
+    with pytest.raises(ValueError):
+        bot.parse_backlog(caption)
+
+
+@pytest.mark.parametrize("caption", ["Avocado", "56", "Avocado 56", "Avocado 56 g", ""])
+def test_backlog_ignores_ordinary_captions(caption: str) -> None:
+    # These belong to parse_correction and must reach it untouched.
+    assert bot.parse_backlog(caption) is None
+
+
+# --- album batching -------------------------------------------------------------
+
+
+async def test_album_applies_one_directive_to_every_photo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, date, str, str]] = []
+
+    async def _fake_process(
+        _message: object, file_id: str, _media_type: str, day: date, meal: str, caption: str
+    ) -> None:
+        calls.append((file_id, day, meal, caption))
+
+    monkeypatch.setattr(bot, "_process_photo", _fake_process)
+    monkeypatch.setattr(bot, "_ALBUM_SETTLE", 0)
+
+    # The caption lands on the second photo, as it does whenever it is typed on
+    # anything but the first frame of the album.
+    bot._albums["grp"] = bot._Album(
+        day=date(2026, 8, 16),
+        meal="dinner",
+        photos=[
+            bot._AlbumPhoto(object(), "a", "image/jpeg", ""),  # type: ignore[arg-type]
+            bot._AlbumPhoto(object(), "b", "image/jpeg", ""),  # type: ignore[arg-type]
+            bot._AlbumPhoto(object(), "c", "image/jpeg", ""),  # type: ignore[arg-type]
+        ],
+    )
+    bot._albums["grp"].day, bot._albums["grp"].meal = date(2026, 8, 15), "lunch"
+
+    await bot._flush_album("grp")
+
+    assert [c[0] for c in calls] == ["a", "b", "c"]
+    assert {(c[1], c[2]) for c in calls} == {(date(2026, 8, 15), "lunch")}
+    assert "grp" not in bot._albums
+
+
+async def test_album_with_a_bad_directive_logs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    processed: list[str] = []
+
+    async def _fake_process(*args: object) -> None:
+        processed.append("ran")
+
+    replies: list[str] = []
+
+    class _Msg:
+        async def reply_text(self, text: str, **_kwargs: object) -> object:
+            replies.append(text)
+            return object()
+
+    monkeypatch.setattr(bot, "_process_photo", _fake_process)
+    monkeypatch.setattr(bot, "_ALBUM_SETTLE", 0)
+    bot._albums["bad"] = bot._Album(
+        day=date(2026, 8, 16),
+        meal="other",
+        photos=[bot._AlbumPhoto(_Msg(), "a", "image/jpeg", "")] * 3,  # type: ignore[arg-type]
+        error="Couldn't read 'nope' as a date.",
+    )
+
+    await bot._flush_album("bad")
+
+    assert processed == []  # nothing filed against the wrong day
+    assert len(replies) == 1  # and the batch is told once, not three times

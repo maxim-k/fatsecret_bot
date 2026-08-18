@@ -74,8 +74,11 @@ Send the bot a photo of food on the scale, with the display readable in frame.
 | `/pending` | List items waiting on you, each with Approve / Discard buttons |
 | `/today` | Show today's FatSecret diary |
 | `/undo` | Remove the most recently logged entry |
+| `/backlog` | As a caption: file the photos against a past day |
 
 Add a caption to skip the guessing: `Avocado` names the food, `56` sets the weight, `Avocado 56` does both. The caption wins over whatever the model reads.
+
+**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal instead of today, wherever in the album you happened to type the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other` — when the photo was sent says nothing about which meal it was. A date it can't read means nothing is logged at all, rather than a batch landing quietly on the wrong day.
 
 A known food is logged immediately. A new one shows the top three FatSecret matches with their macros — tap one and it's logged and remembered. A weight unlike anything you've logged for that food is re-read once, then held.
 
@@ -128,6 +131,6 @@ Tests never touch the real Anthropic or FatSecret APIs — both are stubbed.
 
 ## Status and known limits
 
-- **Meals aren't split.** Everything logs to `other`; FatSecret requires a meal and the bot never picks one.
-- **Whether Physical Life backfills older entries is unknown.** If it only syncs recent ones, the catch-up-on-a-week-of-backlog use case doesn't work and the bot becomes same-day only.
+- **New products can't be created.** FatSecret marks `food.create` as Premier Exclusive, and the Basic tier gets `error 10, Unknown method` for it — verified against the live API. So photographing a nutrition label to mint a product is off the table until the tier changes; a food not already in the catalogue has to be created on fatsecret.com by hand.
+- **Whether Physical Life backfills older entries is unknown.** If it only syncs recent ones, `/backlog` writes entries that never reach the app. Worth checking against a real backlogged day before relying on it.
 - The model defaults to `claude-haiku-4-5` on cost grounds. If it misreads scale digits, set `ANTHROPIC_MODEL=claude-sonnet-5` — check the `raw_digits` field on your first batch of real photos before deciding.

@@ -8,15 +8,17 @@ is frictionless, so nothing downstream may make the user wait or fail.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
 import re
 import uuid
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from typing import Final
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
+from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -44,6 +46,44 @@ UNREADABLE: Final = 0.0
 # The score is too noisy to interrupt the user over, but good enough to decide
 # where to spend eight more seconds.
 SHAKY: Final = 0.5
+
+# Telegram sends an album as one update per photo and attaches the caption to
+# the single message it was typed on, so a /backlog directive naming a date
+# reaches one photo out of ten. The group is collected instead and processed
+# once its updates stop arriving. Only the file_id is stashed: downloading in
+# the handler would let one slow full-resolution document outlast this window
+# and flush a half-finished batch.
+_ALBUM_SETTLE: Final = 2.0
+
+
+@dataclass
+class _AlbumPhoto:
+    """One photo of an album, held until the batch is known to be complete."""
+
+    message: Message
+    file_id: str
+    media_type: str
+    caption: str
+
+
+@dataclass
+class _Album:
+    """Photos of one Telegram media group, and the day they belong to."""
+
+    day: date
+    meal: str
+    photos: list[_AlbumPhoto] = field(default_factory=list)
+    error: str | None = None
+    task: asyncio.Task[None] | None = None
+
+
+_albums: dict[str, _Album] = {}
+
+# The queue is read, modified and written back around awaits. Updates alone are
+# serialised (max_concurrent_updates == 1), but an album flush runs as its own
+# task outside that, so a flush overlapping a button tap would lose one of the
+# two writes.
+_queue_lock = asyncio.Lock()
 
 
 def _owner_id() -> int:
@@ -273,6 +313,56 @@ def parse_correction(text: str) -> tuple[str | None, float | None]:
     return (name or None), weight
 
 
+BACKLOG_USAGE: Final = (
+    "/backlog DD/MM/YYYY [meal] — files the photos against that day.\n"
+    "Meal is breakfast, lunch, dinner or other (default other).\n"
+    "DD/MM/YYYY, DD/MM, today or yesterday. Example: /backlog 15/08/2026 lunch"
+)
+
+# Day before month, matching how the dates are written when asking for them.
+# Accepting both orders would make 08/09 mean either September 8th or August
+# 9th, and a silently wrong day is the one failure this whole feature exists
+# to prevent, so an unparseable date is refused rather than guessed at. A
+# yearless date has the current year appended rather than its own format
+# string: strptime without a year is deprecated and changes meaning in 3.15.
+_BACKLOG_DATE_FORMAT: Final = "%d/%m/%Y"
+
+
+def parse_backlog(caption: str) -> tuple[date, str] | None:
+    """Read a ``/backlog`` directive out of a photo caption.
+
+    :param caption: Raw caption text.
+    :returns: ``(day, meal)`` for a backlog directive, or ``None`` when the
+        caption is an ordinary correction and belongs to
+        :func:`parse_correction` instead.
+    :raises ValueError: If the directive is present but its date or meal cannot
+        be understood. Refusing beats defaulting to today, which would file a
+        week of food against the wrong day without saying so.
+    """
+    words = caption.strip().split()
+    if not words or words[0].lower() != "/backlog":
+        return None
+    if len(words) < 2:
+        raise ValueError(BACKLOG_USAGE)
+
+    today = datetime.now().astimezone().date()
+    spelled = {"today": today, "yesterday": today - timedelta(days=1)}
+    day = spelled.get(words[1].lower())
+    if day is None:
+        written = words[1] if words[1].count("/") == 2 else f"{words[1]}/{today.year}"
+        try:
+            day = datetime.strptime(written, _BACKLOG_DATE_FORMAT).date()
+        except ValueError:
+            raise ValueError(f"Couldn't read {words[1]!r} as a date.\n\n{BACKLOG_USAGE}") from None
+
+    meal = words[2].lower() if len(words) > 2 else "other"
+    if meal not in match.MEALS:
+        raise ValueError(f"{words[2]!r} is not a meal.\n\n{BACKLOG_USAGE}")
+    if len(words) > 3:
+        raise ValueError(f"Don't know what to do with {' '.join(words[3:])!r}.\n\n{BACKLOG_USAGE}")
+    return day, meal
+
+
 def _apply_correction(queued: QueuedItem, text: str) -> None:
     """Overwrite a recognised item from what the user actually said.
 
@@ -336,11 +426,14 @@ async def _reread(
     return next((i for i in second.items if match.normalize(i.product) == key), None)
 
 
-async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Accept a food photo, recognise it, and submit or queue each item.
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Accept a food photo, alone or as one frame of an album.
+
+    A lone photo is processed straight away. An album is collected first: see
+    :data:`_ALBUM_SETTLE` for why it cannot be handled a photo at a time.
 
     :param update: Incoming Telegram update carrying a photo or image document.
-    :param _context: Unused handler context.
+    :param context: Handler context, used to run the album flush as a task.
     """
     message = update.effective_message
     if message is None:
@@ -355,6 +448,80 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         return
 
+    # Telegram stamps message.date in UTC; an evening photo would otherwise
+    # be filed against tomorrow's diary.
+    local = message.date.astimezone()
+    day, meal = local.date(), match.meal_for(local.time())
+    caption, error = message.caption or "", None
+    try:
+        directive = parse_backlog(caption)
+    except ValueError as exc:
+        directive, error = None, str(exc)
+    if directive is not None:
+        # A directive is an instruction about the batch, not a name for the food.
+        day, meal, caption = *directive, ""
+
+    group = message.media_group_id
+    if group is None:
+        if error is not None:
+            await message.reply_text(error)
+            return
+        async with _queue_lock:
+            await _process_photo(message, file_id, media_type, day, meal, caption)
+        return
+
+    # setdefault, so the first photo of the group supplies the fallback day and
+    # meal and later ones do not reset it.
+    album = _albums.setdefault(group, _Album(day=day, meal=meal))
+    if directive is not None:
+        album.day, album.meal = directive
+    if error is not None:
+        album.error = error
+    album.photos.append(_AlbumPhoto(message, file_id, media_type, caption))
+    if album.task is not None:
+        album.task.cancel()
+    album.task = context.application.create_task(_flush_album(group), update=update)
+
+
+async def _flush_album(group: str) -> None:
+    """Process one media group once its updates have stopped arriving.
+
+    :param group: Telegram ``media_group_id`` of the batch.
+    """
+    await asyncio.sleep(_ALBUM_SETTLE)
+    album = _albums.pop(group, None)
+    if album is None or not album.photos:
+        return
+    if album.error is not None:
+        # One reply for the batch, and nothing logged. A directive that cannot be
+        # read must not quietly fall back to today: the whole point of naming a
+        # date is that the photos do not belong to today.
+        await album.photos[0].message.reply_text(album.error)
+        return
+    for photo in album.photos:
+        async with _queue_lock:
+            await _process_photo(
+                photo.message, photo.file_id, photo.media_type, album.day, album.meal, photo.caption
+            )
+
+
+async def _process_photo(
+    message: Message,
+    file_id: str,
+    media_type: str,
+    day: date,
+    meal: str,
+    caption: str,
+) -> None:
+    """Recognise one photo and submit or queue each item it holds.
+
+    :param message: Message the photo arrived on, replied to with the results.
+    :param file_id: Telegram file id to download.
+    :param media_type: MIME type of that file.
+    :param day: Diary date to file the items against.
+    :param meal: FatSecret meal to file them under.
+    :param caption: Correction text to apply, empty when there is none.
+    """
     telegram_file = await message.get_bot().get_file(file_id)
     image_bytes = bytes(await telegram_file.download_as_bytearray())
     digest = hashlib.sha256(image_bytes).hexdigest()
@@ -374,15 +541,6 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         await message.reply_text(f"Couldn't read that photo: {exc}")
         return
 
-    # Telegram stamps message.date in UTC; an evening photo would otherwise
-    # be filed against tomorrow's diary.
-    local = message.date.astimezone()
-    day = local.date()
-    meal = match.meal_for(local.time())
-    # ponytail: load/modify/save is only safe because python-telegram-bot runs
-    # updates one at a time (max_concurrent_updates == 1), and there is an await
-    # on the vision call in between. Raising concurrency loses queue entries when
-    # several photos arrive together — switch to append-only or a lock if so.
     queue = store.load_queue()
     logged: list[tuple[QueuedItem, str]] = []
     held: list[tuple[QueuedItem, str]] = []
@@ -390,8 +548,8 @@ async def on_photo(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     for item in recognition.items:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
-        if message.caption:
-            _apply_correction(queued, message.caption)
+        if caption:
+            _apply_correction(queued, caption)
 
         # One re-read, never a loop: a hint that fails to settle the reading is
         # not going to settle it on the third try either.
@@ -464,8 +622,18 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None or message.text is None or message.reply_to_message is None:
         return
+    async with _queue_lock:
+        await _apply_reply(message, message.text, message.reply_to_message.message_id)
+
+
+async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
+    """Resolve a reply to its queued item and resubmit it corrected.
+
+    :param message: The reply, replied to with the outcome.
+    :param text: The reply's text, a weight or a food name.
+    :param replied_to: Id of the quoted message, which identifies the item.
+    """
     queue = store.load_queue()
-    replied_to = message.reply_to_message.message_id
     queued = next((i for i in queue if i.message_id == replied_to), None)
     if queued is None:
         return  # a reply to something that is not one of our items
@@ -484,7 +652,7 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         queued.food_entry_id = None
         queued.state = ItemState.PENDING
 
-    _apply_correction(queued, message.text)
+    _apply_correction(queued, text)
     if queued.alias is None:
         store.save_queue(queue)
         await _offer_foods(message, queued, queue)
@@ -500,6 +668,21 @@ async def on_reply(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
     sent = await message.reply_text(text)
     queued.message_id = sent.message_id
     store.save_queue(queue)
+
+
+async def on_backlog(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Answer a bare ``/backlog`` typed as a message rather than a caption.
+
+    The directive only does anything attached to photos, and Telegram routes
+    captions to the photo handler, never to a command handler. Without this the
+    command would match nothing and look broken.
+
+    :param update: Incoming ``/backlog`` command.
+    :param _context: Unused handler context.
+    """
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(BACKLOG_USAGE)
 
 
 async def on_pending(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -538,7 +721,25 @@ async def on_button(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None
     # so narrow it once here rather than at each use.
     origin = query.message if isinstance(query.message, Message) else None
     action, item_id, *extra = query.data.split(":")
+    async with _queue_lock:
+        await _apply_button(query, origin, action, item_id, extra)
 
+
+async def _apply_button(
+    query: CallbackQuery,
+    origin: Message | None,
+    action: str,
+    item_id: str,
+    extra: list[str],
+) -> None:
+    """Act on one already-parsed callback.
+
+    :param query: The callback query, edited in place with the outcome.
+    :param origin: The message the buttons are attached to, if still reachable.
+    :param action: ``pick``, ``no``, or anything else meaning approve.
+    :param item_id: Queue id the button belongs to.
+    :param extra: Remaining colon-separated fields; ``pick`` puts a food id here.
+    """
     queue = store.load_queue()
     queued = next((i for i in queue if i.id == item_id), None)
     if queued is None:
@@ -677,6 +878,7 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     """
     owner = filters.User(user_id=_owner_id())
     app = Application.builder().token(token).build()
+    app.add_handler(CommandHandler("backlog", on_backlog, filters=owner))
     app.add_handler(CommandHandler("pending", on_pending, filters=owner))
     app.add_handler(CommandHandler("today", on_today, filters=owner))
     app.add_handler(CommandHandler("undo", on_undo, filters=owner))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from datetime import time
+from typing import Final
 
 from models import Alias, Food, Serving
 
@@ -163,6 +164,11 @@ def pick_serving(food: Food, grams: float) -> tuple[Serving, float]:
         usable[0],
     )
     return chosen, units_for(grams_per_unit(chosen), grams)
+
+
+# The only four values FatSecret accepts. Anything else comes back as an
+# opaque API error, so a meal named by hand is checked against this first.
+MEALS: Final = frozenset({"breakfast", "lunch", "dinner", "other"})
 
 
 def meal_for(when: time) -> str:
