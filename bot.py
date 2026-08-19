@@ -33,7 +33,17 @@ import fatsecret
 import match
 import store
 import vision
-from models import Alias, Food, ItemState, NutritionLabel, QueuedItem, RecognizedItem
+from models import (
+    Alias,
+    CommandItem,
+    Food,
+    ItemState,
+    LogCommand,
+    NutritionLabel,
+    QueuedItem,
+    RecognizedItem,
+    WeightChange,
+)
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +82,8 @@ class _Album:
     photos: list[_AlbumPhoto] = field(default_factory=list)
     # Set by a /new caption: the batch is a product to add, not food to log.
     product: tuple[str | None, str | None] | None = None
+    # Foods named in the caption's command, applied to what the photos yield.
+    items: list[CommandItem] = field(default_factory=list)
     error: str | None = None
     # Extended by every frame that arrives. The flush waits for it to pass
     # rather than being cancelled and re-created, which dropped the coroutine
@@ -304,76 +316,132 @@ async def _offer_foods(message: Message, queued: QueuedItem, queue: list[QueuedI
 _WEIGHT_RE: Final = re.compile(r"(?:^|\s)([-+]?\d+(?:\.\d+)?)\s*(?:g|grams?)?$", re.IGNORECASE)
 
 
-def parse_correction(text: str) -> tuple[str | None, float | None]:
-    """Split a caption or reply into an optional food name and weight.
+def parse_correction(text: str) -> CommandItem | None:
+    """Parse the simple grammar: an optional food name and one weight.
 
-    ``"Avocado"`` names the food, ``"56"`` sets the weight, ``"Avocado 56"``
-    does both. A negative number is a subtraction: ``"-80"`` takes 80 g off,
-    which is how the rinds and the bones come off a weight you could only read
-    after eating. Shared by captions and replies so the two cannot drift apart.
+    Returns the same :class:`~models.CommandItem` the model produces for a
+    fuller command, so both paths meet at one type and cannot disagree about
+    what ``+50`` means. ``"Avocado"`` names the food, ``"56"`` sets the weight,
+    ``"-80"`` subtracts, ``"+50"`` adds.
 
-    :returns: ``(name, weight)``, either of which may be ``None``. A negative
-        weight is a delta, not a new total. A leading ``+`` is redundant and
-        reads as a plain positive.
+    :returns: The item, or ``None`` when the line says nothing.
     """
     cleaned = text.strip().replace(",", ".")
     trailing = _WEIGHT_RE.search(cleaned)
-    weight = float(trailing.group(1)) if trailing else None
     name = cleaned[: trailing.start()].strip() if trailing else cleaned
     # "- 80" leaves a bare dash behind. Naming a food "-" would overwrite the
     # product and send the bot searching FatSecret for punctuation.
-    if not any(char.isalnum() for char in name):
-        name = ""
-    return (name or None), weight
+    name = name.strip(_SEPARATORS) if any(char.isalnum() for char in name) else ""
+
+    weight = None
+    if trailing is not None:
+        written = trailing.group(1)
+        if written[0] == "-":
+            weight = WeightChange(action="subtract", grams=-float(written))
+        elif written[0] == "+":
+            weight = WeightChange(action="add", grams=float(written))
+        else:
+            weight = WeightChange(action="set", grams=float(written))
+    if not name and weight is None:
+        return None
+    return CommandItem(food_name=name or None, weight=weight)
+
+
+# Punctuation people use to separate a name from its weight, trimmed off the
+# name so "Melon - 80" does not try to log a food called "Melon -".
+_SEPARATORS: Final = "-\u2013\u2014:,. "
+
+_KEYWORDS: Final = frozenset({"y", "t", "b", "l", "d", "s"})
+
+# A leading 15/08 or 15/08/2026.
+_DATE_LIKE: Final = re.compile(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?$")
+
+# A token that is *entirely* a number, so "100%" inside "gold standard 100%
+# whey" is not counted and that name still parses locally.
+_NUMERIC: Final = re.compile(r"[-+]?\d+(?:[.,]\d+)?\s*(?:g|grams?)?", re.IGNORECASE)
+
+
+def is_command(text: str) -> bool:
+    """Decide whether a line needs the model, or the local parser will do.
+
+    Routing on length would be backwards here: the product names actually
+    logged run to eight words and parse locally without trouble, while
+    ``y s banana +50`` is four words and does not. What separates them is
+    command syntax, which is visible directly.
+
+    :returns: ``True`` when the line carries a day, a meal, or several foods.
+    """
+    words = text.split()
+    if not words:
+        return False
+    first = words[0].lower()
+    if first == "/backlog":  # the old spelling still routes to the parser
+        return True
+    if first in _KEYWORDS or _DATE_LIKE.match(first):
+        return True
+    # One weight corrects a food. Two means the line lists them.
+    return sum(1 for word in words if _NUMERIC.fullmatch(word)) > 1
+
+
+def resolve_day(spoken: str | None, today: date) -> date | None:
+    """Turn a command's day into a real date.
+
+    :param spoken: ``today``/``yesterday``/``tomorrow``, an ISO date, or ``None``.
+    :returns: The date, or ``None`` when the command did not name one.
+    :raises ValueError: If the day cannot be read. Refusing beats defaulting:
+        food filed quietly against the wrong day is the corruption this whole
+        feature exists to avoid.
+    """
+    if spoken is None:
+        return None
+    relative = {"today": 0, "yesterday": -1, "tomorrow": 1}.get(spoken.strip().lower())
+    if relative is not None:
+        return today + timedelta(days=relative)
+    try:
+        return date.fromisoformat(spoken.strip())
+    except ValueError:
+        raise ValueError(f"Couldn't read {spoken!r} as a date.") from None
+
+
+def check_command(text: str, command: LogCommand) -> LogCommand:
+    """Cross-check a parsed command against what the user actually typed.
+
+    The model now stands between the user and their diary, so it gets the same
+    treatment ``vision._digits_agree`` gives the scale reader: the parts that
+    are checkable against the raw text are checked.
+
+    :raises ValueError: If a sign in the text disagrees with the action chosen.
+    """
+    typed = {
+        match.group(0)[0] if match.group(0)[0] in "-+" else "": match.group(0)
+        for match in _NUMERIC.finditer(text)
+    }
+    for item in command.items:
+        if item.weight is None:
+            continue
+        if not any(char.isdigit() for char in text):
+            # A weight invented for a line with no numbers in it.
+            item.weight = None
+            continue
+        wanted = {"-": "subtract", "+": "add"}
+        for sign, action in wanted.items():
+            if sign in typed and item.weight.action != action and len(command.items) == 1:
+                raise ValueError(
+                    f"Read {text!r} as {item.weight.action!r}, but it is written "
+                    f"with a {sign!r}. Send it again."
+                )
+    return command
 
 
 BACKLOG_USAGE: Final = (
-    "/backlog DD/MM/YYYY [meal] — files the photos against that day.\n"
-    "Meal is breakfast, lunch, dinner or other (default other).\n"
-    "DD/MM/YYYY, DD/MM, today or yesterday. Example: /backlog 15/08/2026 lunch"
+    "Put the day and meal in the caption, shortest form first:\n"
+    "  y s        yesterday, snack\n"
+    "  t d        tomorrow, dinner\n"
+    "  15/08 l    15 August, lunch\n"
+    "Days are y/t or DD/MM/YYYY. Meals are b/l/d/s.\n"
+    "Name foods and weights too: y l chicken 200 rice 150.\n"
+    "Reply to a logged item with 118, -80 or +50 to change its weight."
 )
-
-# Day before month, matching how the dates are written when asking for them.
-# Accepting both orders would make 08/09 mean either September 8th or August
-# 9th, and a silently wrong day is the one failure this whole feature exists
-# to prevent, so an unparseable date is refused rather than guessed at. A
-# yearless date has the current year appended rather than its own format
-# string: strptime without a year is deprecated and changes meaning in 3.15.
-_BACKLOG_DATE_FORMAT: Final = "%d/%m/%Y"
-
-
-def parse_backlog(caption: str) -> tuple[date, str] | None:
-    """Read a ``/backlog`` directive out of a photo caption.
-
-    :returns: ``(day, meal)``, or ``None`` when the caption is an ordinary
-        correction and belongs to :func:`parse_correction` instead.
-    :raises ValueError: If the directive is present but its date or meal make
-        no sense. Refusing beats defaulting to today, which would file a week
-        of food against the wrong day without saying so.
-    """
-    words = caption.strip().split()
-    if not words or words[0].lower() != "/backlog":
-        return None
-    if len(words) < 2:
-        raise ValueError(BACKLOG_USAGE)
-
-    today = datetime.now().astimezone().date()
-    spelled = {"today": today, "yesterday": today - timedelta(days=1)}
-    day = spelled.get(words[1].lower())
-    if day is None:
-        written = words[1] if words[1].count("/") == 2 else f"{words[1]}/{today.year}"
-        try:
-            day = datetime.strptime(written, _BACKLOG_DATE_FORMAT).date()
-        except ValueError:
-            raise ValueError(f"Couldn't read {words[1]!r} as a date.\n\n{BACKLOG_USAGE}") from None
-
-    meal = words[2].lower() if len(words) > 2 else "other"
-    if meal not in match.MEALS:
-        raise ValueError(f"{words[2]!r} is not a meal.\n\n{BACKLOG_USAGE}")
-    if len(words) > 3:
-        raise ValueError(f"Don't know what to do with {' '.join(words[3:])!r}.\n\n{BACKLOG_USAGE}")
-    return day, meal
-
 
 NEW_USAGE: Final = (
     "/new — photograph the product and its nutrition label, and I'll add it.\n"
@@ -404,40 +472,83 @@ def parse_new(caption: str) -> tuple[str | None, str | None] | None:
     return name.strip() or None, brand.strip() or None
 
 
-def _apply_correction(queued: QueuedItem, text: str) -> float | None:
-    """Overwrite a recognised item from what the user actually said.
-
-    The user naming the food outranks the model guessing at it, so the alias is
-    re-resolved against their text. The item is modified in place.
+async def _correct(queued: QueuedItem, text: str) -> float | None:
+    """Apply one typed line to one item, using the model only when needed.
 
     :returns: The grams subtracted, or ``None`` if the weight was set outright.
-    :raises ValueError: If the subtraction leaves nothing. ``weight_g`` has a
+    :raises ValueError: If the line cannot be applied.
+    :raises vision.RecognitionError: If the model could not parse the line.
+    """
+    if not is_command(text):
+        return _apply_correction(queued, text)
+
+    today = datetime.now().astimezone().date()
+    command = check_command(text, await vision.parse_command(text, today))
+    if len(command.items) > 1:
+        raise ValueError(
+            f"That names {len(command.items)} foods, but a reply corrects the one "
+            "it is replying to. Send them one at a time."
+        )
+    # A day or meal the line did not state must not overwrite the item's own.
+    # This is what keeps a reply from dragging a backlogged entry to today.
+    day = resolve_day(command.day, today)
+    if day is not None:
+        queued.day = day
+    if command.meal is not None:
+        queued.meal = command.meal
+    if not command.items:
+        return None
+    return _apply_item(queued, command.items[0])
+
+
+def _apply_item(queued: QueuedItem, item: CommandItem) -> float | None:
+    """Apply one parsed command item to a queued food.
+
+    :returns: The grams subtracted, or ``None`` for any other change.
+    :raises ValueError: If a subtraction leaves nothing.
+    """
+    if item.food_name:
+        queued.item.product = item.food_name
+        queued.alias = match.lookup(item.food_name, store.load_aliases())
+    if item.weight is None:
+        return None
+    if item.weight.action == "set":
+        queued.item.weight_g = item.weight.grams
+        queued.item.raw_digits = f"{item.weight.grams:g}"
+        return None
+    signed = item.weight.grams if item.weight.action == "add" else -item.weight.grams
+    return _adjust(queued, signed)
+
+
+def _apply_correction(queued: QueuedItem, text: str) -> float | None:
+    """Apply the simple grammar to an item, in place.
+
+    :returns: The grams subtracted, or ``None`` for any other change.
+    :raises ValueError: If a subtraction leaves nothing.
+    """
+    item = parse_correction(text)
+    return _apply_item(queued, item) if item is not None else None
+
+
+def _adjust(queued: QueuedItem, delta: float) -> float | None:
+    """Move a weight by ``delta`` rather than replacing it.
+
+    :returns: The grams subtracted, or ``None`` when the delta added.
+    :raises ValueError: If a subtraction leaves nothing. ``weight_g`` has a
         floor of 0, but no model sets ``validate_assignment``, so a negative
         assignment would pass silently here and fail much later in
         :func:`match.units_for` — after the old diary entry is already gone.
     """
-    name, weight = parse_correction(text)
-    if name is not None:
-        queued.item.product = name
-        queued.alias = match.lookup(name, store.load_aliases())
-    if weight is None:
-        return None
-    if weight >= 0:
-        queued.item.weight_g = weight
-        queued.item.raw_digits = f"{weight:g}"
-        return None
-
-    scraps = -weight
-    if scraps >= queued.item.weight_g:
+    if delta + queued.item.weight_g <= 0:
         raise ValueError(
             f"That leaves nothing: {queued.item.product} is "
-            f"{queued.item.weight_g:g} g and you asked to take off {scraps:g} g."
+            f"{queued.item.weight_g:g} g and you asked to take off {-delta:g} g."
         )
     # Record the arithmetic, not the result: raw_digits means "where the number
     # came from", and _describe shows it back.
-    queued.item.raw_digits = f"{queued.item.weight_g:g}-{scraps:g}"
-    queued.item.weight_g -= scraps
-    return scraps
+    queued.item.raw_digits = f"{queued.item.weight_g:g}{delta:+g}"
+    queued.item.weight_g += delta
+    return -delta if delta < 0 else None
 
 
 def _review_keyboard(queued: QueuedItem) -> InlineKeyboardMarkup:
@@ -477,16 +588,23 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     local = message.date.astimezone()
     day, meal = local.date(), match.meal_for(local.time())
     caption, error = message.caption or "", None
-    try:
-        directive = parse_backlog(caption)
-    except ValueError as exc:
-        directive, error = None, str(exc)
+    batch: list[CommandItem] = []
     product = parse_new(caption)
-    if directive is not None or product is not None:
+    if product is not None:
         # A directive is an instruction about the batch, not a name for the food.
         caption = ""
-    if directive is not None:
-        day, meal = directive
+    elif is_command(caption):
+        # The caption carries a day, a meal, or a list of foods. Only the model
+        # reads that grammar; a plain "Avocado 56" never gets here.
+        try:
+            command = check_command(caption, await vision.parse_command(caption, day))
+            spoken = resolve_day(command.day, day)
+            day = spoken if spoken is not None else day
+            meal = command.meal or meal
+            batch = command.items
+            caption = ""
+        except (ValueError, vision.RecognitionError) as exc:
+            error = str(exc)
 
     group = message.media_group_id
     if group is None:
@@ -497,14 +615,14 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await _offer_label([_AlbumPhoto(message, file_id, media_type, "")], *product)
             return
         async with _queue_lock:
-            await _process_photo(message, file_id, media_type, day, meal, caption)
+            await _process_photo(message, file_id, media_type, day, meal, caption, batch)
         return
 
     # setdefault, so the first photo of the group supplies the fallback day and
     # meal and later ones do not reset it.
     album = _albums.setdefault(group, _Album(day=day, meal=meal))
-    if directive is not None:
-        album.day, album.meal = directive
+    if batch or caption == "":
+        album.items = batch or album.items
     if product is not None:
         album.product = product
     if error is not None:
@@ -544,7 +662,13 @@ async def _flush_album(group: str) -> None:
     for photo in album.photos:
         async with _queue_lock:
             await _process_photo(
-                photo.message, photo.file_id, photo.media_type, album.day, album.meal, photo.caption
+                photo.message,
+                photo.file_id,
+                photo.media_type,
+                album.day,
+                album.meal,
+                photo.caption,
+                album.items,
             )
 
 
@@ -694,6 +818,22 @@ async def _download(message: Message, file_id: str) -> bytes:
     return bytes(await telegram_file.download_as_bytearray())
 
 
+def _command_item_for(queued: QueuedItem, items: list[CommandItem]) -> CommandItem | None:
+    """Pick the command item that refers to this recognised food.
+
+    A single unnamed item belongs to whatever the photo found. Several items
+    are matched by name, so "chicken 200 rice 150" lands on the right halves of
+    one plate.
+    """
+    if len(items) == 1 and not items[0].food_name:
+        return items[0]
+    key = match.normalize(queued.item.product)
+    return next(
+        (i for i in items if i.food_name and match.normalize(i.food_name) == key),
+        None,
+    )
+
+
 async def _process_photo(
     message: Message,
     file_id: str,
@@ -701,6 +841,7 @@ async def _process_photo(
     day: date,
     meal: str,
     caption: str,
+    items: list[CommandItem] | None = None,
 ) -> None:
     """Recognise one photo and submit or queue each item it holds.
 
@@ -733,13 +874,16 @@ async def _process_photo(
     for item in recognition.items:
         queued = _queue_item(item, digest, day, meal)
         store.append_log("recognized", {"item_id": queued.id, **item.model_dump()})
-        if caption:
-            try:
+        named = _command_item_for(queued, items or [])
+        try:
+            if caption:
                 # A caption can subtract too, which is how a known container
                 # weight comes off the reading before anything is logged.
                 _apply_correction(queued, caption)
-            except ValueError as exc:
-                await message.reply_text(str(exc))
+            elif named is not None:
+                _apply_item(queued, named)
+        except ValueError as exc:
+            await message.reply_text(str(exc))
 
         hold = _hold_reason(queued)
         if hold is None:
@@ -807,8 +951,8 @@ async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
     # so returning here discards the mutation too.
     previous = queued.item.weight_g
     try:
-        scraps = _apply_correction(queued, text)
-    except ValueError as exc:
+        scraps = await _correct(queued, text)
+    except (ValueError, vision.RecognitionError) as exc:
         await message.reply_text(str(exc))
         return
 

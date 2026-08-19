@@ -11,13 +11,16 @@ import match
 import store
 from models import (
     Alias,
+    CommandItem,
     DiaryEntry,
     Food,
     ItemState,
+    LogCommand,
     NutritionLabel,
     QueuedItem,
     Recognition,
     RecognizedItem,
+    WeightChange,
 )
 
 
@@ -115,31 +118,41 @@ def test_hold_reason_clears_once_the_weight_is_back_in_band() -> None:
 
 
 @pytest.mark.parametrize(
-    ("caption", "name", "weight"),
+    ("caption", "name", "action", "grams"),
     [
-        ("Avocado", "Avocado", None),
-        ("56", None, 56.0),
-        ("Avocado 56", "Avocado", 56.0),
-        ("Avocado 56 g", "Avocado", 56.0),
-        ("56,4", None, 56.4),
-        ("  Greek Yogurt  ", "Greek Yogurt", None),
-        ("Fiber One Fulfill Bars", "Fiber One Fulfill Bars", None),
-        # A minus touching its digits is a subtraction.
-        ("-80", None, -80.0),
-        ("-80 g", None, -80.0),
-        ("Melon -80", "Melon", -80.0),
-        ("-80.5", None, -80.5),
-        # A dash used as a separator is not. "Melon - 80" means 80 g of melon,
-        # and reading it as a subtraction would be silently wrong.
-        ("Melon - 80", "Melon -", 80.0),
-        # A bare dash must not become the food's name.
-        ("- 80", None, 80.0),
-        # A leading plus is redundant, not an addition.
-        ("+80", None, 80.0),
+        ("Avocado", "Avocado", None, None),
+        ("56", None, "set", 56.0),
+        ("Avocado 56", "Avocado", "set", 56.0),
+        ("Avocado 56 g", "Avocado", "set", 56.0),
+        ("56,4", None, "set", 56.4),
+        ("  Greek Yogurt  ", "Greek Yogurt", None, None),
+        ("Fiber One Fulfill Bars", "Fiber One Fulfill Bars", None, None),
+        # A sign touching its digits is relative.
+        ("-80", None, "subtract", 80.0),
+        ("-80 g", None, "subtract", 80.0),
+        ("Melon -80", "Melon", "subtract", 80.0),
+        ("-80.5", None, "subtract", 80.5),
+        ("+50", None, "add", 50.0),
+        # A dash used as a separator is not, and gets trimmed off the name.
+        ("Melon - 80", "Melon", "set", 80.0),
+        ("- 80", None, "set", 80.0),
     ],
 )
-def test_parse_correction(caption: str, name: str | None, weight: float | None) -> None:
-    assert bot.parse_correction(caption) == (name, weight)
+def test_parse_correction(
+    caption: str, name: str | None, action: str | None, grams: float | None
+) -> None:
+    item = bot.parse_correction(caption)
+    assert item is not None
+    assert item.food_name == name
+    if action is None:
+        assert item.weight is None
+    else:
+        assert item.weight is not None
+        assert (item.weight.action, item.weight.grams) == (action, grams)
+
+
+def test_parse_correction_on_an_empty_line() -> None:
+    assert bot.parse_correction("   ") is None
 
 
 def test_caption_overrides_the_model_and_relooks_the_alias() -> None:
@@ -198,131 +211,6 @@ def test_submit_replaces_a_corrected_weight_instead_of_stacking() -> None:
     weights = store.load_aliases()["eggs"].weights
     corrected = [w for w in weights if w != 108.0] + [queued.item.weight_g]
     assert corrected == [120.0, 118.0]
-
-
-def test_backlog_parses_a_full_date_and_meal() -> None:
-    assert bot.parse_backlog("/backlog 15/08/2026 lunch") == (date(2026, 8, 15), "lunch")
-
-
-def test_backlog_reads_day_before_month_not_the_us_order() -> None:
-    # 13/08 can only be the 13th of August; 08/13 is not a valid DD/MM and must
-    # be refused rather than silently read as August 13th.
-    assert bot.parse_backlog("/backlog 13/08/2026")[0] == date(2026, 8, 13)
-    with pytest.raises(ValueError):
-        bot.parse_backlog("/backlog 08/13/2026")
-
-
-def test_backlog_fills_in_the_current_year() -> None:
-    day, _meal = bot.parse_backlog("/backlog 15/08")
-    assert (day.day, day.month) == (15, 8)
-    assert day.year == datetime.now().astimezone().year
-
-
-def test_backlog_accepts_today_and_yesterday() -> None:
-    today = datetime.now().astimezone().date()
-    assert bot.parse_backlog("/backlog today")[0] == today
-    assert bot.parse_backlog("/backlog yesterday")[0] == today - timedelta(days=1)
-
-
-def test_backlog_defaults_to_other_rather_than_the_time_of_sending() -> None:
-    # The photo is of a past meal, so when it was sent says nothing about which
-    # meal it was.
-    assert bot.parse_backlog("/backlog 15/08/2026")[1] == "other"
-
-
-@pytest.mark.parametrize("meal", sorted(match.MEALS))
-def test_backlog_accepts_every_meal_fatsecret_takes(meal: str) -> None:
-    assert bot.parse_backlog(f"/backlog 15/08/2026 {meal}")[1] == meal
-
-
-@pytest.mark.parametrize(
-    "caption",
-    [
-        "/backlog",
-        "/backlog notadate lunch",
-        "/backlog 32/13/2026",
-        "/backlog 15/08/2026 brunch",
-        "/backlog 15/08/2026 lunch and also eggs",
-    ],
-)
-def test_backlog_refuses_what_it_cannot_read(caption: str) -> None:
-    # Refusing beats defaulting to today: a whole batch would land on the wrong
-    # day without saying so.
-    with pytest.raises(ValueError):
-        bot.parse_backlog(caption)
-
-
-@pytest.mark.parametrize("caption", ["Avocado", "56", "Avocado 56", "Avocado 56 g", ""])
-def test_backlog_ignores_ordinary_captions(caption: str) -> None:
-    # These belong to parse_correction and must reach it untouched.
-    assert bot.parse_backlog(caption) is None
-
-
-# --- album batching -------------------------------------------------------------
-
-
-async def test_album_applies_one_directive_to_every_photo(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, date, str, str]] = []
-
-    async def _fake_process(
-        _message: object, file_id: str, _media_type: str, day: date, meal: str, caption: str
-    ) -> None:
-        calls.append((file_id, day, meal, caption))
-
-    monkeypatch.setattr(bot, "_process_photo", _fake_process)
-    monkeypatch.setattr(bot, "_ALBUM_SETTLE", 0)
-
-    # The caption lands on the second photo, as it does whenever it is typed on
-    # anything but the first frame of the album.
-    bot._albums["grp"] = bot._Album(
-        day=date(2026, 8, 16),
-        meal="dinner",
-        photos=[
-            bot._AlbumPhoto(object(), "a", "image/jpeg", ""),  # type: ignore[arg-type]
-            bot._AlbumPhoto(object(), "b", "image/jpeg", ""),  # type: ignore[arg-type]
-            bot._AlbumPhoto(object(), "c", "image/jpeg", ""),  # type: ignore[arg-type]
-        ],
-    )
-    bot._albums["grp"].day, bot._albums["grp"].meal = date(2026, 8, 15), "lunch"
-
-    await bot._flush_album("grp")
-
-    assert [c[0] for c in calls] == ["a", "b", "c"]
-    assert {(c[1], c[2]) for c in calls} == {(date(2026, 8, 15), "lunch")}
-    assert "grp" not in bot._albums
-
-
-async def test_album_with_a_bad_directive_logs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    processed: list[str] = []
-
-    async def _fake_process(*args: object) -> None:
-        processed.append("ran")
-
-    replies: list[str] = []
-
-    class _Msg:
-        async def reply_text(self, text: str, **_kwargs: object) -> object:
-            replies.append(text)
-            return object()
-
-    monkeypatch.setattr(bot, "_process_photo", _fake_process)
-    monkeypatch.setattr(bot, "_ALBUM_SETTLE", 0)
-    bot._albums["bad"] = bot._Album(
-        day=date(2026, 8, 16),
-        meal="other",
-        photos=[bot._AlbumPhoto(_Msg(), "a", "image/jpeg", "")] * 3,  # type: ignore[arg-type]
-        error="Couldn't read 'nope' as a date.",
-    )
-
-    await bot._flush_album("bad")
-
-    assert processed == []  # nothing filed against the wrong day
-    assert len(replies) == 1  # and the batch is told once, not three times
-
-
-# --- /today macros --------------------------------------------------------------
 
 
 def test_macro_line_matches_the_pickers_field_order_and_separators() -> None:
@@ -406,7 +294,9 @@ def test_parse_new(caption: str, name: str | None, brand: str | None) -> None:
 def test_new_keeps_a_trailing_weight_in_the_product_name() -> None:
     # parse_correction would strip "23 g" off as a weight. Product names sell
     # their macros in the title now, and that number is part of the name.
-    assert bot.parse_correction("Super protein bar 23 g")[1] == 23.0
+    simple = bot.parse_correction("Super protein bar 23 g")
+    assert simple is not None and simple.weight is not None
+    assert simple.weight.grams == 23.0
     assert bot.parse_new("/new Super protein bar 23 g") == ("Super protein bar 23 g", None)
 
 
@@ -632,3 +522,198 @@ async def test_reply_to_an_unknown_message_does_nothing(_reply_env: _Recorder) -
     await bot._apply_reply(_reply_env, "-80", 12345)  # type: ignore[arg-type]
     assert _reply_env.deleted == []
     assert _reply_env.replies == []
+
+
+# --- routing: local grammar vs the model ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "-150",
+        "118",
+        "56,4",
+        "Avocado",
+        "Avocado 56",
+        "Avocado 56 g",
+        "Melon -80",
+        # The long names actually logged. Routing on token count would send
+        # these to the model; they are plain name-and-weight and must not go.
+        "trader joe's northwest super sweet frozen cut white corn 56",
+        "optimum nutrition gold standard 100% whey - vanilla 56",
+        "fiber one fulfill bars - caramel peanut 56",
+    ],
+)
+def test_plain_corrections_never_reach_the_model(text: str) -> None:
+    assert bot.is_command(text) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "y s banana +50",
+        "t d salmon 200",
+        "15/08 l bread 56",
+        "15/08/2026 l",
+        "y",
+        "b",
+        "y l chicken 200 rice 150",
+        "/backlog 15/08/2026 lunch",
+    ],
+)
+def test_commands_route_to_the_model(text: str) -> None:
+    assert bot.is_command(text) is True
+
+
+def test_a_percentage_inside_a_name_is_not_a_second_weight() -> None:
+    # "100%" is not a standalone number, so this stays a one-weight correction.
+    assert bot.is_command("optimum nutrition 100% whey 56") is False
+
+
+# --- resolving the day ----------------------------------------------------------
+
+
+def test_resolve_day() -> None:
+    today = date(2026, 8, 18)
+    assert bot.resolve_day(None, today) is None  # not stated stays not stated
+    assert bot.resolve_day("today", today) == today
+    assert bot.resolve_day("yesterday", today) == date(2026, 8, 17)
+    assert bot.resolve_day("tomorrow", today) == date(2026, 8, 19)
+    assert bot.resolve_day("2026-08-15", today) == date(2026, 8, 15)
+
+
+def test_resolve_day_refuses_what_it_cannot_read() -> None:
+    # Refusing beats defaulting: food filed quietly against the wrong day is
+    # the corruption this grammar exists to avoid.
+    with pytest.raises(ValueError, match="as a date"):
+        bot.resolve_day("someday", date(2026, 8, 18))
+
+
+# --- cross-checking the model ---------------------------------------------------
+
+
+def _command(action: str, grams: float, name: str | None = None) -> LogCommand:
+    return LogCommand(
+        items=[CommandItem(food_name=name, weight=WeightChange(action=action, grams=grams))]
+    )
+
+
+def test_a_sign_in_the_text_must_match_the_action_chosen() -> None:
+    # The model now stands between the user and their diary, so the checkable
+    # part gets checked — same as vision._digits_agree does for the scale.
+    with pytest.raises(ValueError, match="written with"):
+        bot.check_command("-150", _command("set", 150))
+    with pytest.raises(ValueError):
+        bot.check_command("+50", _command("subtract", 50))
+    # Agreement passes through untouched.
+    assert bot.check_command("-150", _command("subtract", 150)).items[0].weight is not None
+
+
+def test_a_weight_invented_for_a_line_with_no_numbers_is_dropped() -> None:
+    checked = bot.check_command("Avocado", _command("set", 100, "Avocado"))
+    assert checked.items[0].weight is None
+    assert checked.items[0].food_name == "Avocado"
+
+
+# --- applying a parsed item -----------------------------------------------------
+
+
+def test_apply_item_handles_all_three_actions() -> None:
+    for action, grams, expected, scraps in [
+        ("set", 118.0, 118.0, None),
+        ("add", 50.0, 400.0, None),
+        ("subtract", 80.0, 270.0, 80.0),
+    ]:
+        queued = _logged()
+        got = bot._apply_item(queued, CommandItem(weight=WeightChange(action=action, grams=grams)))
+        assert queued.item.weight_g == expected, action
+        assert got == scraps, action
+
+
+def test_apply_item_refuses_a_subtraction_that_leaves_nothing() -> None:
+    with pytest.raises(ValueError, match="leaves nothing"):
+        bot._apply_item(_logged(), CommandItem(weight=WeightChange(action="subtract", grams=400)))
+
+
+def test_command_items_match_recognised_foods_by_name() -> None:
+    # "chicken 200 rice 150" has to land on the right halves of one plate.
+    chicken = _logged(product="chicken")
+    rice = _logged(product="rice")
+    items = [
+        CommandItem(food_name="rice", weight=WeightChange(action="set", grams=150)),
+        CommandItem(food_name="chicken", weight=WeightChange(action="set", grams=200)),
+    ]
+    assert bot._command_item_for(chicken, items) is items[1]
+    assert bot._command_item_for(rice, items) is items[0]
+    # A lone unnamed item belongs to whatever the photo found.
+    solo = [CommandItem(weight=WeightChange(action="subtract", grams=80))]
+    assert bot._command_item_for(chicken, solo) is solo[0]
+
+
+# --- a reply must not move an item to another day -------------------------------
+
+
+async def test_a_reply_that_names_no_day_keeps_the_items_own_day(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug in the original draft, pinned.
+
+    A schema defaulting target_date to "today" cannot tell "the user said
+    today" from "the user said nothing", so a bare -80 on a backlogged item
+    silently dragged it to today.
+    """
+    backlogged = _logged()
+    backlogged.day = date(2026, 8, 15)
+    backlogged.meal = "lunch"
+
+    async def _parse(_text: str, _today: date) -> LogCommand:
+        # What the model returns for a bare "-80": nothing stated.
+        return LogCommand(items=[CommandItem(weight=WeightChange(action="subtract", grams=80))])
+
+    monkeypatch.setattr(bot.vision, "parse_command", _parse)
+    # "-80" routes locally, so force the model path to prove the inheritance.
+    monkeypatch.setattr(bot, "is_command", lambda _text: True)
+
+    await bot._correct(backlogged, "-80")
+
+    assert backlogged.day == date(2026, 8, 15)
+    assert backlogged.meal == "lunch"
+    assert backlogged.item.weight_g == 270.0
+
+
+async def test_a_reply_that_names_a_day_moves_the_item(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = _logged()
+    item.day = date(2026, 8, 15)
+
+    async def _parse(_text: str, _today: date) -> LogCommand:
+        return LogCommand(day="yesterday", meal="breakfast", items=[])
+
+    monkeypatch.setattr(bot.vision, "parse_command", _parse)
+    monkeypatch.setattr(bot, "is_command", lambda _text: True)
+
+    await bot._correct(item, "y b")
+
+    assert item.day == datetime.now().astimezone().date() - timedelta(days=1)
+    assert item.meal == "breakfast"
+
+
+async def test_a_reply_naming_several_foods_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _parse(_text: str, _today: date) -> LogCommand:
+        return LogCommand(items=[CommandItem(food_name="a"), CommandItem(food_name="b")])
+
+    monkeypatch.setattr(bot.vision, "parse_command", _parse)
+    monkeypatch.setattr(bot, "is_command", lambda _text: True)
+
+    with pytest.raises(ValueError, match="one at a time"):
+        await bot._correct(_logged(), "chicken 200 rice 150")
+
+
+def test_every_meal_the_schema_can_emit_is_one_fatsecret_takes() -> None:
+    import typing
+
+    emitted = set(typing.get_args(LogCommand.model_fields["meal"].annotation)[0].__args__)
+    assert emitted <= match.MEALS

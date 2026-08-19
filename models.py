@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -53,6 +54,44 @@ class Recognition(BaseModel):
     """Everything one photo yielded. A plate may hold several items."""
 
     items: list[RecognizedItem]
+
+
+class WeightChange(BaseModel):
+    """How one number in a command changes a food's weight.
+
+    The sign lives in ``action``, not in ``grams``. A model that had to encode
+    "subtract" as a negative number could drop the minus and produce a plausible
+    but opposite instruction; an enum cannot fail that way silently.
+    """
+
+    action: Literal["set", "add", "subtract"]
+    grams: float = Field(ge=0)
+
+
+class CommandItem(BaseModel):
+    """One food named in a command, and what to do to its weight."""
+
+    # Null when the photo or the replied-to item already says which food.
+    food_name: str | None = None
+    weight: WeightChange | None = None
+
+
+class LogCommand(BaseModel):
+    """A whole command: where to file the food, and which foods.
+
+    ``day`` and ``meal`` are null when the user did not state them, which is
+    not the same as "today". A reply inheriting its parent's day depends on
+    telling those apart: defaulting them here would silently move a backlogged
+    entry to today, which is the corruption everything else guards against.
+    """
+
+    # "today", "yesterday", "tomorrow", or an ISO date. Resolved in code rather
+    # than by the model, so an unreadable date refuses instead of guessing.
+    day: str | None = None
+    # Already one of match.MEALS. FatSecret has no "snack" and reports an
+    # unknown meal opaquely; its apps render "other" as Snack.
+    meal: Literal["breakfast", "lunch", "dinner", "other"] | None = None
+    items: list[CommandItem] = Field(default_factory=list)
 
 
 class NutrientReading(BaseModel):

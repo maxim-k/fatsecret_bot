@@ -1,4 +1,4 @@
-"""Photo -> structured food items via Gemini vision.
+"""Photo and typed command -> structured data via Gemini.
 
 The user photographs food sitting on kitchen scales, with the scale's LCD in
 frame, and forwards the photo to the bot. This module turns that image into
@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import date
 from typing import Final
 
 import pydantic
 from google import genai
 from google.genai import types
 
-from models import NutritionLabel, Recognition, RecognizedItem
+from models import LogCommand, NutritionLabel, Recognition, RecognizedItem
 
 # One model for every photo. The previous pairing ran Haiku on everything and
 # escalated to Sonnet on doubt, which bought both of its failure modes at once:
@@ -343,6 +344,53 @@ async def read_label(
     ]
     parts.append("Read this product's name, brand and Nutrition Facts panel." + told)
     return await _generate(parts, _LABEL_PROMPT, NutritionLabel)
+
+
+_COMMAND_PROMPT: Final = """\
+You parse one line a home cook typed into a food diary. Extract it into the \
+schema. Do not answer the user, do not add foods they did not name, and do not \
+invent a number they did not type.
+
+Day:
+"y" means yesterday. "t" means tomorrow. A bare date is day/month/year, so \
+"15/08" and "15/08/2026" both mean the 15th of August: report it as \
+YYYY-MM-DD. Ignore a leading "/backlog" word if one is there.
+
+Meal:
+"b" is breakfast, "l" is lunch, "d" is dinner, "s" is a snack. Report a snack \
+as "other", which is the only value the diary accepts for it.
+
+**Leave day and meal null when the line does not say them.** Null means "the \
+user did not choose", which is not the same as today. Guessing here files food \
+against the wrong day, so report only what was typed.
+
+Foods and weights:
+Every remaining word belongs to a food name. A number attached to a food is a \
+weight in grams:
+- a bare number sets the weight, so "56" is action "set", grams 56
+- a number written with a leading "-" subtracts, so "-80" is action \
+  "subtract", grams 80
+- a number written with a leading "+" adds, so "+50" is action "add", grams 50
+Report grams as a positive number every time. The action carries the sign.
+
+A line can name several foods: "chicken 200 rice 150" is two items. A line can \
+also name no food at all, and just carry a weight: that item has a null \
+food_name, because the photo or the message being replied to already says \
+which food it is. A line with no number at all has a null weight.
+"""
+
+
+async def parse_command(text: str, today: date) -> LogCommand:
+    """Parse one typed line into a diary command.
+
+    :param text: Exactly what the user typed, unmodified.
+    :param today: The user's local date, so relative days resolve correctly.
+    :raises RecognitionError: If the model returned nothing parseable, or its
+        output failed schema validation.
+    """
+    return await _generate(
+        [f"Today is {today.isoformat()}.\n\n{text}"], _COMMAND_PROMPT, LogCommand
+    )
 
 
 def _digits_agree(item: RecognizedItem) -> bool:
