@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 UNREADABLE: Final = 0.0
 
 # Telegram sends an album as one update per photo and attaches the caption to
-# the single message it was typed on, so a /backlog directive naming a date
+# the single message it was typed on, so a caption naming a date
 # reaches one photo out of ten. The group is collected instead and processed
 # once its updates stop arriving. Only the file_id is stashed: downloading in
 # the handler would let one slow full-resolution document outlast this window
@@ -361,6 +361,12 @@ _DATE_LIKE: Final = re.compile(r"^\d{1,2}/\d{1,2}(?:/\d{2,4})?$")
 _NUMERIC: Final = re.compile(r"[-+]?\d+(?:[.,]\d+)?\s*(?:g|grams?)?", re.IGNORECASE)
 
 
+def _known_foods() -> list[str]:
+    """Names the user already logs, most-eaten first, for the command parser."""
+    aliases = store.load_aliases()
+    return [a.food_name for a in sorted(aliases.values(), key=lambda a: a.hits, reverse=True)][:40]
+
+
 def is_command(text: str) -> bool:
     """Decide whether a line needs the model, or the local parser will do.
 
@@ -374,10 +380,13 @@ def is_command(text: str) -> bool:
     words = text.split()
     if not words:
         return False
-    first = words[0].lower()
-    if first == "/backlog":  # the old spelling still routes to the parser
+    # A keyword only counts in first position: "d" leads a command, but it is
+    # also a word inside "vitamin d 500".
+    if words[0].lower() in _KEYWORDS:
         return True
-    if first in _KEYWORDS or _DATE_LIKE.match(first):
+    # A date counts anywhere, so a line with its parts out of order reaches the
+    # model and gets refused rather than becoming a food name.
+    if any(_DATE_LIKE.match(word) for word in words):
         return True
     # One weight corrects a food. Two means the line lists them.
     return sum(1 for word in words if _NUMERIC.fullmatch(word)) > 1
@@ -433,14 +442,16 @@ def check_command(text: str, command: LogCommand) -> LogCommand:
     return command
 
 
-BACKLOG_USAGE: Final = (
-    "Put the day and meal in the caption, shortest form first:\n"
+GRAMMAR_USAGE: Final = (
+    "Caption a photo, or reply to a logged item.\n\n"
+    "Day and meal, shortest form first:\n"
     "  y s        yesterday, snack\n"
     "  t d        tomorrow, dinner\n"
     "  15/08 l    15 August, lunch\n"
     "Days are y/t or DD/MM/YYYY. Meals are b/l/d/s.\n"
     "Name foods and weights too: y l chicken 200 rice 150.\n"
-    "Reply to a logged item with 118, -80 or +50 to change its weight."
+    "Weights: 118 sets, -80 subtracts, +50 adds.\n\n"
+    "/pending  /today  /undo  /new"
 )
 
 NEW_USAGE: Final = (
@@ -483,7 +494,7 @@ async def _correct(queued: QueuedItem, text: str) -> float | None:
         return _apply_correction(queued, text)
 
     today = datetime.now().astimezone().date()
-    command = check_command(text, await vision.parse_command(text, today))
+    command = check_command(text, await vision.parse_command(text, today, _known_foods()))
     if len(command.items) > 1:
         raise ValueError(
             f"That names {len(command.items)} foods, but a reply corrects the one "
@@ -597,7 +608,9 @@ async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # The caption carries a day, a meal, or a list of foods. Only the model
         # reads that grammar; a plain "Avocado 56" never gets here.
         try:
-            command = check_command(caption, await vision.parse_command(caption, day))
+            command = check_command(
+                caption, await vision.parse_command(caption, day, _known_foods())
+            )
             spoken = resolve_day(command.day, day)
             day = spoken if spoken is not None else day
             meal = command.meal or meal
@@ -993,18 +1006,17 @@ async def _apply_reply(message: Message, text: str, replied_to: int) -> None:
 
 
 async def on_usage(update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Answer a caption directive typed as a bare message.
+    """Print the caption grammar, or ``/new``'s own usage.
 
-    ``/backlog`` and ``/new`` only do anything attached to photos, and Telegram
-    routes captions to the photo handler, never to a command handler. Without
-    this the commands would match nothing and look broken.
-
+    Telegram routes a caption to the photo handler and never to a command
+    handler, so ``/new`` typed on its own would otherwise match nothing and
+    look broken.
     """
     message = update.effective_message
     if message is None or message.text is None:
         return
     await message.reply_text(
-        NEW_USAGE if message.text.split()[0].lower().startswith("/new") else BACKLOG_USAGE
+        NEW_USAGE if message.text.split()[0].lower().startswith("/new") else GRAMMAR_USAGE
     )
 
 
@@ -1191,7 +1203,7 @@ def build_application(token: str) -> Application:  # type: ignore[type-arg]
     """Assemble the Telegram application, ready for polling, owner-gated."""
     owner = filters.User(user_id=_owner_id())
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler(["backlog", "new"], on_usage, filters=owner))
+    app.add_handler(CommandHandler(["help", "new"], on_usage, filters=owner))
     app.add_handler(CommandHandler("pending", on_pending, filters=owner))
     app.add_handler(CommandHandler("today", on_today, filters=owner))
     app.add_handler(CommandHandler("undo", on_undo, filters=owner))

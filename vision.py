@@ -354,7 +354,7 @@ invent a number they did not type.
 Day:
 "y" means yesterday. "t" means tomorrow. A bare date is day/month/year, so \
 "15/08" and "15/08/2026" both mean the 15th of August: report it as \
-YYYY-MM-DD. Ignore a leading "/backlog" word if one is there.
+YYYY-MM-DD.
 
 Meal:
 "b" is breakfast, "l" is lunch, "d" is dinner, "s" is a snack. Report a snack \
@@ -373,23 +373,39 @@ weight in grams:
 - a number written with a leading "+" adds, so "+50" is action "add", grams 50
 Report grams as a positive number every time. The action carries the sign.
 
-A line can name several foods: "chicken 200 rice 150" is two items. A line can \
+A line can name several foods: "chicken 200 rice 150" is two items. But a \
+product name can itself contain a number — "chobani 20g protein", "fiber one \
+10 g fiber", "omega 3" — and those are one food, not two. When the line \
+matches a name the user already logs, keep it whole and use that exact string. \
+A line can \
 also name no food at all, and just carry a weight: that item has a null \
 food_name, because the photo or the message being replied to already says \
 which food it is. A line with no number at all has a null weight.
 """
 
 
-async def parse_command(text: str, today: date) -> LogCommand:
+async def parse_command(text: str, today: date, known_foods: list[str]) -> LogCommand:
     """Parse one typed line into a diary command.
 
     :param text: Exactly what the user typed, unmodified.
     :param today: The user's local date, so relative days resolve correctly.
+    :param known_foods: Names the user has logged before. Without them
+        "chobani 20g protein 56" reads as two foods; with them it is one food
+        the user already has, weighing 56 g.
     :raises RecognitionError: If the model returned nothing parseable, or its
         output failed schema validation.
     """
+    known = ""
+    if known_foods:
+        candidates = "\n".join(f"- {food}" for food in known_foods)
+        known = (
+            "\n\nFoods this user already logs. Each is one name, even when it "
+            f"contains a number:\n{candidates}"
+        )
     return await _generate(
-        [f"Today is {today.isoformat()}.\n\n{text}"], _COMMAND_PROMPT, LogCommand
+        [f"Today is {today.isoformat()}.{known}\n\nThe line to parse:\n{text}"],
+        _COMMAND_PROMPT,
+        LogCommand,
     )
 
 

@@ -104,10 +104,10 @@ Add a caption to a photo to skip the guessing: `Avocado` names the food, `56` se
 | `/pending` | List items waiting on you, each with Approve / Discard buttons |
 | `/today` | Show today's diary with macros and a daily total |
 | `/undo` | Remove the most recently logged entry |
-| `/backlog` | Prints the caption grammar. You don't need the command itself |
+| `/help` | Prints the caption and reply grammar |
 | `/new` | As a caption: read a product's nutrition label and add it to FatSecret |
 
-**Catching up on a backlog.** Send the photos as one batch and caption them with the day and meal, shortest form first:
+**Catching up.** Send the photos as one batch and caption them with the day and meal, shortest form first:
 
 | Caption | Files against |
 |---|---|

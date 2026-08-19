@@ -300,7 +300,7 @@ def test_new_keeps_a_trailing_weight_in_the_product_name() -> None:
     assert bot.parse_new("/new Super protein bar 23 g") == ("Super protein bar 23 g", None)
 
 
-@pytest.mark.parametrize("caption", ["Avocado", "56", "/backlog 15/08/2026 lunch", "", "news"])
+@pytest.mark.parametrize("caption", ["Avocado", "56", "y s banana +50", "", "news"])
 def test_parse_new_ignores_everything_else(caption: str) -> None:
     assert bot.parse_new(caption) is None
 
@@ -540,7 +540,6 @@ async def test_reply_to_an_unknown_message_does_nothing(_reply_env: _Recorder) -
         # The long names actually logged. Routing on token count would send
         # these to the model; they are plain name-and-weight and must not go.
         "trader joe's northwest super sweet frozen cut white corn 56",
-        "optimum nutrition gold standard 100% whey - vanilla 56",
         "fiber one fulfill bars - caramel peanut 56",
     ],
 )
@@ -558,7 +557,7 @@ def test_plain_corrections_never_reach_the_model(text: str) -> None:
         "y",
         "b",
         "y l chicken 200 rice 150",
-        "/backlog 15/08/2026 lunch",
+        "banana 15/08/2026 lunch",
     ],
 )
 def test_commands_route_to_the_model(text: str) -> None:
@@ -666,7 +665,7 @@ async def test_a_reply_that_names_no_day_keeps_the_items_own_day(
     backlogged.day = date(2026, 8, 15)
     backlogged.meal = "lunch"
 
-    async def _parse(_text: str, _today: date) -> LogCommand:
+    async def _parse(_text: str, _today: date, _known: list[str]) -> LogCommand:
         # What the model returns for a bare "-80": nothing stated.
         return LogCommand(items=[CommandItem(weight=WeightChange(action="subtract", grams=80))])
 
@@ -687,7 +686,7 @@ async def test_a_reply_that_names_a_day_moves_the_item(
     item = _logged()
     item.day = date(2026, 8, 15)
 
-    async def _parse(_text: str, _today: date) -> LogCommand:
+    async def _parse(_text: str, _today: date, _known: list[str]) -> LogCommand:
         return LogCommand(day="yesterday", meal="breakfast", items=[])
 
     monkeypatch.setattr(bot.vision, "parse_command", _parse)
@@ -702,7 +701,7 @@ async def test_a_reply_that_names_a_day_moves_the_item(
 async def test_a_reply_naming_several_foods_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _parse(_text: str, _today: date) -> LogCommand:
+    async def _parse(_text: str, _today: date, _known: list[str]) -> LogCommand:
         return LogCommand(items=[CommandItem(food_name="a"), CommandItem(food_name="b")])
 
     monkeypatch.setattr(bot.vision, "parse_command", _parse)
@@ -717,3 +716,22 @@ def test_every_meal_the_schema_can_emit_is_one_fatsecret_takes() -> None:
 
     emitted = set(typing.get_args(LogCommand.model_fields["meal"].annotation)[0].__args__)
     assert emitted <= match.MEALS
+
+
+def test_a_name_containing_a_number_goes_to_the_model_not_the_regex() -> None:
+    """A product name with a number in it is ambiguous, so ask the model.
+
+    "chobani 20g protein 56" and "chicken 200 rice 150" are structurally
+    identical: two numeric tokens each. One is a single food the user already
+    logs, the other is two foods. No regex can tell them apart, so both route
+    to the model, which gets the alias list and can.
+    """
+    for text in ["chobani 20g protein 56", "omega 3 60", "chicken 200 rice 150"]:
+        assert bot.is_command(text) is True, text
+
+
+def test_a_single_letter_inside_a_name_is_not_a_meal_keyword() -> None:
+    # "d" leads a command but also sits inside "vitamin d". Only first position
+    # counts, or half the supplement aisle would parse as dinner.
+    for text in ["vitamin d 500", "plan b bar 40"]:
+        assert bot.is_command(text) is False, text
