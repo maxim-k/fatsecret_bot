@@ -86,8 +86,10 @@ Reply to any message the bot sent you, whether it already logged the item or sti
 |---|---|
 | `118` | Sets the weight to 118 g |
 | `-80` | Takes 80 g off, for rinds, bones and shells you can only weigh afterwards |
+| `+50` | Adds 50 g |
 | `Avocado` | Names the right food and remembers it |
 | `Avocado 118` | Both |
+| `y s` | Moves it to yesterday's snack |
 
 For an item it already logged, the bot deletes the diary entry and writes a new one, so a correction never leaves two entries for one portion. If the correction can't work—subtracting more than the item weighs—the bot changes nothing and reports why.
 
@@ -102,10 +104,21 @@ Add a caption to a photo to skip the guessing: `Avocado` names the food, `56` se
 | `/pending` | List items waiting on you, each with Approve / Discard buttons |
 | `/today` | Show today's diary with macros and a daily total |
 | `/undo` | Remove the most recently logged entry |
-| `/backlog` | As a caption: file the photos against a past day |
+| `/backlog` | Prints the caption grammar. You don't need the command itself |
 | `/new` | As a caption: read a product's nutrition label and add it to FatSecret |
 
-**Catching up on a backlog.** Send the photos as one batch, captioned `/backlog 15/08/2026 lunch`. The whole batch files against that day and meal, wherever in the album you typed the caption. The date is **day/month/year**; `15/08` fills in the current year, and `today` and `yesterday` work too. The meal is `breakfast`, `lunch`, `dinner` or `other`, and defaults to `other`. If the bot can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
+**Catching up on a backlog.** Send the photos as one batch and caption them with the day and meal, shortest form first:
+
+| Caption | Files against |
+|---|---|
+| `y s` | Yesterday, snack |
+| `t d` | Tomorrow, dinner |
+| `15/08 l` | 15 August, lunch |
+| `y l chicken 200 rice 150` | Yesterday's lunch, with two foods and their weights |
+
+`y` is yesterday and `t` is tomorrow. A written date is **day/month/year**, and `15/08` fills in the current year. Meals are `b`, `l`, `d` and `s`; a snack files as FatSecret's `other`, which its apps show as Snack. Leave either out and the bot keeps the photo's own day and the meal for that time of day. If it can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
+
+The same grammar works as a reply, so `y s` on a logged item moves it. A line that says nothing about the day leaves the item where it is—a bare `-80` never drags a backlogged entry to today.
 
 **Adding a product FatSecret doesn't have.** Photograph the package and its nutrition label, caption `/new`, and the bot reads the panel and shows it to you before writing anything. Name it yourself with `/new Super protein bar 23 g, SuperCompany`—everything before the last comma is the name, so a product that sells its macros in the title keeps them. The bot logs nothing here: the next scale photo of the product does that.
 
