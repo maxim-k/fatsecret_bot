@@ -114,7 +114,7 @@ Add a caption to a photo to skip the guessing: `Avocado` names the food, `56` se
 | `y s` | Yesterday, snack |
 | `t d` | Tomorrow, dinner |
 | `15/08 l` | 15 August, lunch |
-| `y l chicken 200 rice 150` | Yesterday's lunch, with two foods and their weights |
+| `y l chicken 200 rice 150` | Yesterday's lunch: two foods with their weights |
 
 `y` is yesterday and `t` is tomorrow. A written date is **day/month/year**, and `15/08` fills in the current year. Meals are `b`, `l`, `d` and `s`; a snack files as FatSecret's `other`, which its apps show as Snack. Leave either out and the bot keeps the photo's own day and the meal for that time of day. If it can't read the date it logs nothing at all, rather than filing the batch quietly against the wrong day.
 
